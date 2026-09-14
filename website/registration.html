@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Gitanushilanam Competition Registration</title>
+
+    <link rel="stylesheet" href="css/registration.css">
+</head>
+
+<body>
+
+    <!-- =========================================================
+         HEADER
+    ========================================================== -->
+
+    <header class="topbar">
+
+        <div class="brand">
+            <img src="https://learngitalivegita.com/assets/v2/images/LGLG_logo.svg?v=TVm0R4k" alt="Learn Gita Live Gita" class="brand-logo">
+            <div>
+                <h2>Gitanushilanam 2026</h2>
+                <p>Participant Registration Portal</p>
+            </div>
+        </div>
+
+        <div class="open-badge">Registration Open</div>
+
+    </header>
+
+
+    <!-- =========================================================
+         HERO
+    ========================================================== -->
+
+    <section class="hero">
+
+        <div class="hero-tag">
+            <span class="dot"></span>
+            Registrations are now open
+        </div>
+
+        <h1>
+            Discover. Participate.
+            <span>Inspire.</span>
+        </h1>
+
+        <p>
+            Register once and participate in one or more competitions. Choose your events below and complete your participant information.
+        </p>
+
+    </section>
+
+
+    <!-- =========================================================
+         REGISTRATION FORM
+    ========================================================== -->
+
+    <main class="page">
+
+        <div class="form-card">
+
+            <div class="form-title">
+
+                <div>
+                    <h2>Participant Registration</h2>
+                    <p>Please enter your details carefully.</p>
+                </div>
+
+                <div class="form-indicator">Registration Form</div>
+
+            </div>
+
+
+            <form id="competitionForm">
+
+
+                <!-- =================================================
+                     SECTION 01 - PERSONAL INFORMATION
+                ================================================== -->
+
+                <section class="form-section">
+
+                    <div class="section-heading">
+
+                        <div class="section-number">01</div>
+
+                        <div>
+                            <h3>Personal Information</h3>
+                            <p>Basic participant details</p>
+                        </div>
+
+                    </div>
+
+
+                    <div class="grid">
+
+                        <div class="field">
+                            <label for="name">Full Name <span class="required">*</span></label>
+                            <input id="name" name="name" type="text" placeholder="Enter your full name" required>
+                        </div>
+
+
+                        <div class="field">
+                            <label for="email">Email Address <span class="required">*</span></label>
+                            <input id="email" name="email" type="email" placeholder="name@example.com" required>
+                        </div>
+
+
+                        <div class="field">
+                            <label for="age">Age <span class="required">*</span></label>
+                            <input id="age" name="age" type="number" min="3" max="120" placeholder="Enter your age" required>
+                            <span class="field-info">Competition eligibility will later be determined using age groups.</span>
+                        </div>
+
+
+                        <div class="field">
+                            <label for="phone">Phone Number <span class="required">*</span></label>
+                            <input id="phone" name="phone" type="tel" placeholder="+91 98765 43210" required>
+                        </div>
+
+
+                        <div class="field">
+
+                            <label for="whatsapp">WhatsApp Number <span class="required">*</span></label>
+
+                            <input id="whatsapp" name="whatsapp" type="tel" placeholder="+91 98765 43210" required>
+
+                            <div class="same-number">
+                                <input id="sameAsPhone" type="checkbox">
+                                <label for="sameAsPhone">Same as phone number</label>
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </section>
+
+
+                <!-- =================================================
+                     SECTION 02 - LOCATION
+                ================================================== -->
+
+                <section class="form-section">
+
+                    <div class="section-heading">
+
+                        <div class="section-number">02</div>
+
+                        <div>
+                            <h3>Location</h3>
+                            <p>Where are you participating from?</p>
+                        </div>
+
+                    </div>
+
+
+                    <div class="grid">
+
+                        <div class="field">
+                            <label for="country">Country <span class="required">*</span></label>
+                            <input id="country" name="country" type="text" placeholder="e.g. India" required>
+                        </div>
+
+
+                        <div class="field">
+                            <label for="state">State <span class="required">*</span></label>
+                            <input id="state" name="state" type="text" placeholder="e.g. Karnataka" required>
+                        </div>
+
+
+                        <div class="field">
+                            <label for="city">City <span class="required">*</span></label>
+                            <input id="city" name="city" type="text" placeholder="e.g. Bengaluru" required>
+                        </div>
+
+
+                        <div class="field full">
+
+                            <label for="heardFrom">
+                                How did you hear about this competition?
+                                <span class="required">*</span>
+                            </label>
+
+                            <select id="heardFrom" name="heardFrom" required>
+                                <option value="">Select an option</option>
+                                <option value="whatsapp">WhatsApp</option>
+                                <option value="instagram">Instagram</option>
+                                <option value="facebook">Facebook</option>
+                                <option value="youtube">YouTube</option>
+                                <option value="friends_family">Friends / Family</option>
+                                <option value="school_college">School / College</option>
+                                <option value="temple_community">Temple / Community</option>
+                                <option value="other">Other</option>
+                            </select>
+
+                        </div>
+
+                    </div>
+
+                </section>
+
+
+                <!-- =================================================
+                     SECTION 03 - COMPETITION SELECTION
+                ================================================== -->
+
+                <section class="form-section">
+
+                    <div class="section-heading">
+
+                        <div class="section-number">03</div>
+
+                        <div>
+                            <h3>Select Competitions</h3>
+                            <p>You may participate in multiple competitions.</p>
+                        </div>
+
+                    </div>
+
+
+                    <div class="competition-intro">
+                        Select all competitions you would like to participate in. The available competitions can later be automatically filtered according to the participant's age group.
+                    </div>
+
+
+                    <div class="competition-grid">
+
+
+                        <!-- Bhagavad Gita Quiz -->
+
+                        <label class="competition-card" data-competition-card>
+
+                            <input type="checkbox" name="competitions" value="bhagavad_gita_quiz">
+
+                            <div class="check-indicator">✓</div>
+
+                            <div class="competition-icon">📖</div>
+
+                            <h4>Bhagavad Gita Quiz</h4>
+
+                            <p>
+                                Test your knowledge and understanding of the teachings and concepts from the Bhagavad Gita.
+                            </p>
+
+                        </label>
+
+
+                        <!-- Shloka Recitation -->
+
+                        <label class="competition-card" data-competition-card>
+
+                            <input type="checkbox" name="competitions" value="shloka_recitation">
+
+                            <div class="check-indicator">✓</div>
+
+                            <div class="competition-icon">🕉️</div>
+
+                            <h4>Shloka Recitation</h4>
+
+                            <p>
+                                Demonstrate accurate pronunciation, rhythm and confident recitation of Sanskrit shlokas.
+                            </p>
+
+                        </label>
+
+
+                        <!-- Animated BG Video -->
+
+                        <label class="competition-card" data-competition-card>
+
+                            <input type="checkbox" name="competitions" value="animated_bg_video">
+
+                            <div class="check-indicator">✓</div>
+
+                            <div class="competition-icon">🎬</div>
+
+                            <h4>Animated BG Video</h4>
+
+                            <p>
+                                Create an engaging animated video inspired by themes and stories from the Bhagavad Gita.
+                            </p>
+
+                        </label>
+
+
+                        <!-- Treasure Hunt -->
+
+                        <label class="competition-card" data-competition-card>
+
+                            <input type="checkbox" name="competitions" value="treasure_hunt">
+
+                            <div class="check-indicator">✓</div>
+
+                            <div class="competition-icon">🧭</div>
+
+                            <h4>Treasure Hunt</h4>
+
+                            <p>
+                                Solve clues, uncover challenges and progress through an interactive knowledge-based treasure hunt.
+                            </p>
+
+                        </label>
+
+                    </div>
+
+
+                    <!-- Future age eligibility information -->
+
+                    <div class="age-rule-info" id="ageRuleInfo"></div>
+
+
+                    <!-- Selected competitions summary -->
+
+                    <div class="selected-summary" id="selectedSummary">
+
+                        <strong>Selected competitions</strong>
+
+                        <div class="selected-tags" id="selectedTags"></div>
+
+                    </div>
+
+                </section>
+
+
+                <!-- =================================================
+                     AGREEMENT
+                ================================================== -->
+
+                <div class="agreement">
+
+                    <input id="agreement" type="checkbox" required>
+
+                    <label for="agreement">
+                        I confirm that the information provided above is accurate. I understand that competition eligibility may depend on the participant's age and the applicable competition rules.
+                    </label>
+
+                </div>
+
+
+                <!-- =================================================
+                     SUBMIT
+                ================================================== -->
+
+                <div class="submit-area">
+
+                    <div class="secure-message">
+                        🔒 Registration information will be securely stored.
+                    </div>
+
+                    <button class="submit-button" type="submit">
+                        Continue Registration →
+                    </button>
+
+                </div>
+
+
+                <div id="status"></div>
+
+            </form>
+
+        </div>
+
+    </main>
+
+
+    <!-- =========================================================
+         JAVASCRIPT
+    ========================================================== -->
+
+    <script src="js/registration.js"></script>
+
+</body>
+
+</html>

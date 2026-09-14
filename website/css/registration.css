@@ -1,0 +1,707 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+:root {
+    --bg-main: #060b14;
+    --bg-card: rgba(14, 26, 46, 0.80);
+    --bg-input: rgba(5, 13, 25, 0.68);
+
+    --primary: #4d8dff;
+    --secondary: #7b5cff;
+
+    --text-main: #eef4ff;
+    --text-soft: #9aabc5;
+    --text-muted: #71839f;
+
+    --border: rgba(255, 255, 255, 0.09);
+}
+
+body {
+    font-family: Inter, Arial, Helvetica, sans-serif;
+    min-height: 100vh;
+    color: var(--text-main);
+    background: radial-gradient(circle at top left, #1b3761 0%, #0c1728 30%, #060b14 72%);
+    overflow-x: hidden;
+}
+
+body::before {
+    content: "";
+    position: fixed;
+    width: 500px;
+    height: 500px;
+    top: 15%;
+    left: -200px;
+    background: rgba(74, 130, 255, 0.13);
+    filter: blur(100px);
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: -1;
+}
+
+body::after {
+    content: "";
+    position: fixed;
+    width: 500px;
+    height: 500px;
+    bottom: -150px;
+    right: -150px;
+    background: rgba(120, 77, 255, 0.12);
+    filter: blur(110px);
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: -1;
+}
+
+
+/* =========================================================
+   HEADER
+========================================================= */
+
+.topbar {
+    width: 100%;
+    padding: 22px 7%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    background: rgba(5, 12, 24, 0.58);
+    backdrop-filter: blur(18px);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.brand-logo {
+    height: 52px;
+    width: auto;
+    object-fit: contain;
+    display: block;
+}
+
+.brand h2 {
+    font-size: 18px;
+    margin-bottom: 3px;
+}
+
+.brand p {
+    color: #8c9db8;
+    font-size: 12px;
+}
+
+.open-badge {
+    padding: 9px 15px;
+    border-radius: 999px;
+    color: #afd0ff;
+    border: 1px solid rgba(102, 157, 255, 0.27);
+    background: rgba(65, 119, 255, 0.10);
+    font-size: 12px;
+}
+
+
+/* =========================================================
+   HERO
+========================================================= */
+
+.hero {
+    width: min(1200px, 94%);
+    margin: 0 auto;
+    text-align: center;
+    padding: 50px 0 32px;
+}
+
+.hero-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    margin-bottom: 20px;
+    border-radius: 100px;
+    color: #9bc0ff;
+    font-size: 12px;
+    background: rgba(69, 122, 255, 0.10);
+    border: 1px solid rgba(99, 149, 255, 0.20);
+}
+
+.hero-tag .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #53db98;
+    box-shadow: 0 0 10px rgba(83, 219, 152, 0.8);
+}
+
+.hero h1 {
+    max-width: 900px;
+    margin: 0 auto 18px;
+    line-height: 1.04;
+    letter-spacing: -2px;
+    font-size: clamp(38px, 6vw, 66px);
+}
+
+.hero h1 span {
+    color: transparent;
+    background: linear-gradient(90deg, #62a1ff, #a377ff, #70e1ff);
+    background-clip: text;
+    -webkit-background-clip: text;
+}
+
+.hero p {
+    max-width: 700px;
+    margin: 0 auto;
+    color: #9aacc5;
+    line-height: 1.75;
+    font-size: 16px;
+}
+
+
+/* =========================================================
+   MAIN FORM CARD
+========================================================= */
+
+.page {
+    width: min(1350px, 94%);
+    margin: 15px auto 90px;
+}
+
+.form-card {
+    overflow: hidden;
+    border-radius: 26px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(22px);
+    box-shadow: 0 35px 100px rgba(0, 0, 0, 0.38);
+}
+
+.form-title {
+    padding: 31px 38px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(90deg, rgba(67, 119, 255, 0.09), rgba(122, 82, 255, 0.04));
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+}
+
+.form-title h2 {
+    font-size: 23px;
+    margin-bottom: 6px;
+}
+
+.form-title p {
+    font-size: 13px;
+    color: #8fa1bd;
+}
+
+.form-indicator {
+    font-size: 12px;
+    padding: 9px 14px;
+    border-radius: 10px;
+    color: #a7c5ff;
+    border: 1px solid rgba(82, 137, 255, 0.22);
+    background: rgba(68, 120, 255, 0.08);
+}
+
+form {
+    padding: 38px;
+}
+
+
+/* =========================================================
+   FORM SECTIONS
+========================================================= */
+
+.form-section {
+    margin-bottom: 45px;
+}
+
+.section-heading {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    margin-bottom: 26px;
+}
+
+.section-number {
+    flex-shrink: 0;
+    width: 37px;
+    height: 37px;
+    border-radius: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 800;
+    background: linear-gradient(135deg, #4387ff, #7058ff);
+    box-shadow: 0 8px 20px rgba(69, 121, 255, 0.18);
+}
+
+.section-heading h3 {
+    font-size: 18px;
+}
+
+.section-heading p {
+    color: #788ba9;
+    font-size: 12px;
+    margin-top: 3px;
+}
+
+
+/* =========================================================
+   GRID
+========================================================= */
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    align-items: start;
+}
+
+.full {
+    grid-column: 1 / -1;
+}
+
+
+/* =========================================================
+   FORM INPUTS
+========================================================= */
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+}
+
+label {
+    color: #ced9ea;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.required {
+    color: #ff8585;
+}
+
+input,
+select {
+    width: 100%;
+    min-height: 48px;
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    outline: none;
+    border-radius: 12px;
+    padding: 14px 15px;
+    color: var(--text-main);
+    background: var(--bg-input);
+    font-size: 14px;
+    transition: all 0.18s ease;
+}
+
+input::placeholder {
+    color: #54647c;
+}
+
+input:focus,
+select:focus {
+    border-color: rgba(83, 142, 255, 0.85);
+    box-shadow: 0 0 0 4px rgba(70, 129, 255, 0.10);
+    background: rgba(6, 16, 30, 0.88);
+}
+
+select {
+    cursor: pointer;
+}
+
+select option {
+    color: white;
+    background: #101c30;
+}
+
+.field-info {
+    font-size: 11px;
+    color: #687d9c;
+    line-height: 1.5;
+}
+
+
+/* =========================================================
+   HOW DID YOU HEAR ABOUT US
+========================================================= */
+
+#heardFrom {
+    width: 100%;
+    min-height: 48px;
+    cursor: pointer;
+    color: var(--text-main);
+    background: var(--bg-input);
+}
+
+#heardFrom:invalid {
+    color: #71839f;
+}
+
+#heardFrom option {
+    color: #eef4ff;
+    background: #101c30;
+}
+
+
+/* =========================================================
+   WHATSAPP
+========================================================= */
+
+.same-number {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.same-number input {
+    width: 15px;
+    height: 15px;
+    min-height: auto;
+    accent-color: #4a8cff;
+}
+
+.same-number label {
+    font-weight: 400;
+    font-size: 11px;
+    color: #8194b2;
+}
+
+
+/* =========================================================
+   COMPETITIONS
+========================================================= */
+
+.competition-intro {
+    margin-bottom: 20px;
+    padding: 15px 17px;
+    border-radius: 12px;
+    background: rgba(65, 118, 255, 0.06);
+    border: 1px solid rgba(79, 135, 255, 0.14);
+    color: #8fa8ce;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.competition-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+}
+
+.competition-card {
+    position: relative;
+    cursor: pointer;
+    display: block;
+    min-height: 135px;
+    border-radius: 16px;
+    padding: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: rgba(7, 16, 30, 0.62);
+    transition: all 0.20s ease;
+    overflow: hidden;
+}
+
+.competition-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(93, 148, 255, 0.38);
+    background: rgba(21, 39, 70, 0.65);
+}
+
+.competition-card.selected {
+    border-color: rgba(84, 144, 255, 0.80);
+    background: linear-gradient(135deg, rgba(65, 122, 255, 0.17), rgba(112, 83, 255, 0.08));
+    box-shadow: 0 10px 30px rgba(47, 102, 227, 0.12);
+}
+
+.competition-card input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.competition-icon {
+    width: 42px;
+    height: 42px;
+    border-radius: 12px;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    background: rgba(72, 128, 255, 0.12);
+    border: 1px solid rgba(82, 143, 255, 0.16);
+}
+
+.competition-card h4 {
+    margin-bottom: 7px;
+    font-size: 15px;
+}
+
+.competition-card p {
+    color: #798ba8;
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.check-indicator {
+    position: absolute;
+    width: 23px;
+    height: 23px;
+    right: 15px;
+    top: 15px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: transparent;
+    font-size: 12px;
+}
+
+.competition-card.selected .check-indicator {
+    color: white;
+    border-color: transparent;
+    background: linear-gradient(135deg, #4088ff, #7358ff);
+}
+
+
+/* =========================================================
+   AGE FILTER PLACEHOLDER
+========================================================= */
+
+.age-rule-info {
+    display: none;
+    margin-top: 20px;
+    padding: 14px 16px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 186, 86, 0.16);
+    background: rgba(255, 171, 64, 0.06);
+    color: #c5a779;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+
+/* =========================================================
+   SELECTED COMPETITIONS
+========================================================= */
+
+.selected-summary {
+    margin-top: 20px;
+    display: none;
+    padding: 17px;
+    border-radius: 13px;
+    background: rgba(68, 123, 255, 0.06);
+    border: 1px solid rgba(79, 135, 255, 0.14);
+}
+
+.selected-summary strong {
+    display: block;
+    margin-bottom: 11px;
+    font-size: 12px;
+    color: #b7c8df;
+}
+
+.selected-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.competition-tag {
+    padding: 7px 11px;
+    border-radius: 999px;
+    font-size: 11px;
+    color: #a9c7ff;
+    background: rgba(65, 122, 255, 0.12);
+    border: 1px solid rgba(87, 145, 255, 0.17);
+}
+
+
+/* =========================================================
+   AGREEMENT
+========================================================= */
+
+.agreement {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 17px;
+    border-radius: 13px;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.agreement input {
+    width: 16px;
+    height: 16px;
+    min-height: auto;
+    margin-top: 2px;
+    accent-color: #4b8eff;
+}
+
+.agreement label {
+    color: #899bb7;
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.6;
+}
+
+
+/* =========================================================
+   SUBMIT
+========================================================= */
+
+.submit-area {
+    margin-top: 29px;
+    padding-top: 28px;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+}
+
+.secure-message {
+    color: #7488a7;
+    font-size: 11px;
+}
+
+.submit-button {
+    border: none;
+    outline: none;
+    cursor: pointer;
+    border-radius: 13px;
+    padding: 15px 29px;
+    color: white;
+    font-size: 14px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #397eff, #6e59ff);
+    box-shadow: 0 14px 35px rgba(71, 115, 255, 0.28);
+    transition: all 0.18s ease;
+}
+
+.submit-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 18px 45px rgba(71, 115, 255, 0.38);
+}
+
+.submit-button:active {
+    transform: translateY(0);
+}
+
+
+/* =========================================================
+   STATUS
+========================================================= */
+
+#status {
+    display: none;
+    margin-top: 22px;
+    padding: 14px 16px;
+    border-radius: 12px;
+    color: #9ec1ff;
+    border: 1px solid rgba(82, 140, 255, 0.16);
+    background: rgba(64, 118, 255, 0.07);
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+
+/* =========================================================
+   TABLET
+========================================================= */
+
+@media (max-width: 1000px) {
+
+    .grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .competition-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+
+/* =========================================================
+   MOBILE
+========================================================= */
+
+@media (max-width: 650px) {
+
+    .topbar {
+        padding: 17px 5%;
+    }
+
+    .open-badge {
+        display: none;
+    }
+
+    .hero {
+        width: 92%;
+        padding: 35px 0 25px;
+    }
+
+    .hero h1 {
+        font-size: 36px;
+        letter-spacing: -1px;
+    }
+
+    .hero p {
+        font-size: 14px;
+    }
+
+    .page {
+        width: 94%;
+        margin-bottom: 50px;
+    }
+
+    .brand-logo {
+        height: 42px;
+    }
+
+    .form-title {
+        padding: 22px 20px;
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    form {
+        padding: 20px;
+    }
+
+    .grid,
+    .competition-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .full {
+        grid-column: auto;
+    }
+
+    .competition-card {
+        min-height: auto;
+    }
+
+    .submit-area {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .submit-button {
+        width: 100%;
+    }
+}
