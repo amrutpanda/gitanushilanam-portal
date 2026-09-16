@@ -102,6 +102,16 @@
                             <input id="name" name="name" type="text" placeholder="Enter your full name" required>
                         </div>
 
+                        <div class="field">
+                            <label for="gender">Gender <span class="required">*</span></label>
+                            <select id="gender" name="gender" required>
+                                <option value="">Select gender</option>
+                                <option value="male">Male</option>
+                                <option value="female">Female</option>
+                                <option value="other">Other</option>
+                                <option value="prefer_not_to_say">Prefer not to say</option>
+                            </select>
+                        </div>
 
                         <div class="field">
                             <label for="email">Email Address <span class="required">*</span></label>
@@ -133,6 +143,20 @@
                                 <label for="sameAsPhone">Same as phone number</label>
                             </div>
 
+                        </div>
+
+                        <div class="field">
+                            <label for="institutionOrganization">
+                                School / Institute / Organization
+                            </label>
+
+                            <input
+                                type="text"
+                                id="institutionOrganization"
+                                name="institutionOrganization"
+                                maxlength="200"
+                                placeholder="Enter school, institute or organization"
+                            >
                         </div>
 
                     </div>
