@@ -1,3 +1,8 @@
+const API_BASE_URL =
+    window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost"
+        ? "http://127.0.0.1:8787"
+        : "https://gitanushilanam-portal.panda2amrut.workers.dev";
+
 const form = document.getElementById("competitionForm");
 const phone = document.getElementById("phone");
 const whatsapp = document.getElementById("whatsapp");
@@ -156,7 +161,7 @@ form.addEventListener("submit", async function (event) {
         status.style.display = "block";
         status.textContent = "Submitting registration...";
 
-        const response = await fetch("http://127.0.0.1:8787/api/register", {
+        const response = await fetch(`${API_BASE_URL}/api/register`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
