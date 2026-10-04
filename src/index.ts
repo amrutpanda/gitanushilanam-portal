@@ -2,6 +2,68 @@ import { parsePhoneNumberFromString } from "libphonenumber-js/max";
 
 class ValidationError extends Error {}
 
+interface Env {
+    gitanushilanam_db: D1Database;
+    TURNSTILE_SECRET_KEY: string;
+}
+
+interface TurnstileResult {
+    success: boolean;
+    hostname?: string;
+    action?: string;
+    "error-codes"?: string[];
+}
+
+interface AdminSession {
+    session_id: number;
+    admin_id: number;
+    email: string;
+    name: string | null;
+    role: string;
+    expires_at: number;
+    active: number;
+}
+
+const ADMIN_SESSION_SECONDS = 60 * 60;
+const LOGIN_ATTEMPT_WINDOW_SECONDS = 15 * 60;
+const MAX_LOGIN_ATTEMPTS = 5;
+const ADMIN_PAGE_SIZE = 30;
+
+const allowedOrigins = [
+    "https://gitanushilanam.net",
+    "https://www.gitanushilanam.net",
+    "https://gitanushilanam.onrender.com",
+    "http://127.0.0.1:5500",
+    "http://localhost:5500"
+];
+
+const allowedTurnstileHostnames = [
+    "gitanushilanam.net",
+    "www.gitanushilanam.net",
+    "gitanushilanam.onrender.com"
+];
+
+const allowedCompetitions = [
+    "bhagavad_gita_quiz",
+    "shloka_recitation",
+    "animated_bg_video",
+    "treasure_hunt"
+];
+
+const allowedGenders = [
+    "male",
+    "female",
+    "other",
+    "prefer_not_to_say"
+];
+
+const competitionColumns: Record<string, string> = {
+    bhagavad_gita_quiz: "bhagavad_gita_quiz",
+    shloka_recitation: "shloka_recitation",
+    animated_bg_video: "animated_bg_video",
+    treasure_hunt: "treasure_hunt"
+};
+
 function readRequiredText(value: unknown, fieldName: string, maximumLength: number): string {
     if (typeof value !== "string") {
         throw new ValidationError(fieldName + " must be text.");
@@ -62,53 +124,16 @@ function readPhoneNumber(value: unknown, fieldName: string): string {
     return parsedNumber.number;
 }
 
-interface Env {
-    gitanushilanam_db: D1Database;
-    TURNSTILE_SECRET_KEY: string;
-}
-
-interface TurnstileResult {
-    success: boolean;
-    hostname?: string;
-    action?: string;
-    "error-codes"?: string[];
-}
-
-const allowedOrigins = [
-    "https://gitanushilanam.net",
-    "https://www.gitanushilanam.net",
-    "https://gitanushilanam.onrender.com",
-    "http://127.0.0.1:5500",
-    "http://localhost:5500"
-];
-
-const allowedTurnstileHostnames = [
-    "gitanushilanam.net",
-    "www.gitanushilanam.net",
-    "gitanushilanam.onrender.com"
-];
-
-const allowedCompetitions = [
-    "bhagavad_gita_quiz",
-    "shloka_recitation",
-    "animated_bg_video",
-    "treasure_hunt"
-];
-
-const allowedGenders = [
-    "male",
-    "female",
-    "other",
-    "prefer_not_to_say"
-];
-
 function getCorsHeaders(request: Request): Record<string, string> {
     const origin = request.headers.get("Origin");
 
     const headers: Record<string, string> = {
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Vary": "Origin"
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Vary": "Origin",
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer"
     };
 
     if (origin && allowedOrigins.includes(origin)) {
@@ -118,14 +143,174 @@ function getCorsHeaders(request: Request): Record<string, string> {
     return headers;
 }
 
-function jsonResponse(request: Request, data: unknown, status = 200): Response {
+function jsonResponse(
+    request: Request,
+    data: unknown,
+    status = 200,
+    extraHeaders: Record<string, string> = {}
+): Response {
     return Response.json(data, {
         status,
-        headers: getCorsHeaders(request)
+        headers: {
+            ...getCorsHeaders(request),
+            ...extraHeaders
+        }
     });
 }
 
-async function verifyTurnstile(token: string, request: Request, secretKey: string): Promise<boolean> {
+function isAllowedOrigin(request: Request): boolean {
+    const origin = request.headers.get("Origin");
+    return origin !== null && allowedOrigins.includes(origin);
+}
+
+function nowEpochSeconds(): number {
+    return Math.floor(Date.now() / 1000);
+}
+
+function getBearerToken(request: Request): string | null {
+    const authorization = request.headers.get("Authorization");
+
+    if (!authorization) {
+        return null;
+    }
+
+    const match = authorization.match(/^Bearer\s+([A-Za-z0-9_-]{43})$/iu);
+    return match ? match[1] : null;
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+    let binary = "";
+
+    for (const byte of bytes) {
+        binary += String.fromCharCode(byte);
+    }
+
+    return btoa(binary)
+        .replaceAll("+", "-")
+        .replaceAll("/", "_")
+        .replace(/=+$/u, "");
+}
+
+function base64UrlToBytes(value: string): Uint8Array {
+    const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+
+    for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+    }
+
+    return bytes;
+}
+
+async function sha256Base64Url(value: string): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+    return bytesToBase64Url(new Uint8Array(digest));
+}
+
+async function derivePasswordHash(
+    password: string,
+    saltBase64Url: string,
+    iterations: number
+): Promise<Uint8Array> {
+    const keyMaterial = await crypto.subtle.importKey(
+        "raw",
+        new TextEncoder().encode(password),
+        "PBKDF2",
+        false,
+        ["deriveBits"]
+    );
+
+    const bits = await crypto.subtle.deriveBits(
+        {
+            name: "PBKDF2",
+            hash: "SHA-256",
+            salt: base64UrlToBytes(saltBase64Url),
+            iterations
+        },
+        keyMaterial,
+        256
+    );
+
+    return new Uint8Array(bits);
+}
+
+function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
+    if (left.length !== right.length) {
+        return false;
+    }
+
+    let difference = 0;
+
+    for (let index = 0; index < left.length; index += 1) {
+        difference |= left[index] ^ right[index];
+    }
+
+    return difference === 0;
+}
+
+async function verifyPassword(
+    password: string,
+    saltBase64Url: string,
+    expectedHashBase64Url: string,
+    iterations: number
+): Promise<boolean> {
+    const actualHash = await derivePasswordHash(password, saltBase64Url, iterations);
+    const expectedHash = base64UrlToBytes(expectedHashBase64Url);
+    return constantTimeEqual(actualHash, expectedHash);
+}
+
+function generateSessionToken(): string {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return bytesToBase64Url(bytes);
+}
+
+function getClientIp(request: Request): string | null {
+    const value = request.headers.get("CF-Connecting-IP");
+    return value ? value.slice(0, 100) : null;
+}
+
+function getUserAgent(request: Request): string | null {
+    const value = request.headers.get("User-Agent");
+    return value ? value.slice(0, 500) : null;
+}
+
+async function writeLoginHistory(
+    env: Env,
+    request: Request,
+    email: string,
+    eventType: "login_success" | "login_failure" | "logout" | "session_expired",
+    adminId: number | null,
+    failureReason: string | null = null
+): Promise<void> {
+    await env.gitanushilanam_db.prepare(`
+        INSERT INTO admin_login_history (
+            admin_id,
+            email_attempted,
+            event_type,
+            failure_reason,
+            ip_address,
+            user_agent
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(
+        adminId,
+        email,
+        eventType,
+        failureReason,
+        getClientIp(request),
+        getUserAgent(request)
+    ).run();
+}
+
+async function verifyTurnstile(
+    token: string,
+    request: Request,
+    secretKey: string,
+    expectedAction: string
+): Promise<boolean> {
     try {
         const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
             method: "POST",
@@ -151,7 +336,7 @@ async function verifyTurnstile(token: string, request: Request, secretKey: strin
             return false;
         }
 
-        if (result.action !== "registration") {
+        if (result.action !== expectedAction) {
             console.warn("Unexpected Turnstile action:", result.action);
             return false;
         }
@@ -166,6 +351,153 @@ async function verifyTurnstile(token: string, request: Request, secretKey: strin
         console.error("Turnstile verification error:", error);
         return false;
     }
+}
+
+async function getAdminSession(request: Request, env: Env): Promise<AdminSession | null> {
+    const token = getBearerToken(request);
+
+    if (!token) {
+        return null;
+    }
+
+    const sessionHash = await sha256Base64Url(token);
+    const now = nowEpochSeconds();
+
+    const session = await env.gitanushilanam_db.prepare(`
+        SELECT
+            s.id AS session_id,
+            s.admin_id AS admin_id,
+            s.expires_at AS expires_at,
+            u.email AS email,
+            u.name AS name,
+            u.role AS role,
+            u.active AS active
+        FROM admin_sessions AS s
+        INNER JOIN admin_accesslist AS u ON u.id = s.admin_id
+        WHERE s.session_hash = ?
+        LIMIT 1
+    `).bind(sessionHash).first<AdminSession>();
+
+    if (!session) {
+        return null;
+    }
+
+    if (session.expires_at <= now || session.active !== 1) {
+        await env.gitanushilanam_db.prepare(
+            "DELETE FROM admin_sessions WHERE id = ?"
+        ).bind(session.session_id).run();
+
+        await writeLoginHistory(
+            env,
+            request,
+            session.email,
+            "session_expired",
+            session.admin_id,
+            session.active !== 1 ? "account_inactive" : "session_expired"
+        );
+
+        return null;
+    }
+
+    await env.gitanushilanam_db.prepare(
+        "UPDATE admin_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ).bind(session.session_id).run();
+
+    return session;
+}
+
+async function requireAdminSession(request: Request, env: Env): Promise<AdminSession | Response> {
+    const session = await getAdminSession(request, env);
+
+    if (!session) {
+        return jsonResponse(request, {
+            success: false,
+            message: "Admin session is not valid. Please sign in again."
+        }, 401);
+    }
+
+    return session;
+}
+
+async function getLoginAttemptKey(email: string, request: Request): Promise<string> {
+    const ipAddress = getClientIp(request) ?? "unknown";
+    return sha256Base64Url(`${email}|${ipAddress}`);
+}
+
+async function isLoginRateLimited(env: Env, attemptKey: string): Promise<boolean> {
+    const now = nowEpochSeconds();
+
+    const row = await env.gitanushilanam_db.prepare(`
+        SELECT attempts, window_expires_at
+        FROM admin_login_attempts
+        WHERE attempt_key = ?
+        LIMIT 1
+    `).bind(attemptKey).first<{ attempts: number; window_expires_at: number }>();
+
+    if (!row || row.window_expires_at <= now) {
+        return false;
+    }
+
+    return row.attempts >= MAX_LOGIN_ATTEMPTS;
+}
+
+async function recordFailedLogin(env: Env, attemptKey: string): Promise<void> {
+    const now = nowEpochSeconds();
+    const nextExpiry = now + LOGIN_ATTEMPT_WINDOW_SECONDS;
+
+    await env.gitanushilanam_db.prepare(`
+        INSERT INTO admin_login_attempts (
+            attempt_key,
+            attempts,
+            window_expires_at,
+            last_attempt_at
+        )
+        VALUES (?, 1, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(attempt_key) DO UPDATE SET
+            attempts = CASE
+                WHEN admin_login_attempts.window_expires_at <= ? THEN 1
+                ELSE admin_login_attempts.attempts + 1
+            END,
+            window_expires_at = CASE
+                WHEN admin_login_attempts.window_expires_at <= ? THEN ?
+                ELSE admin_login_attempts.window_expires_at
+            END,
+            last_attempt_at = CURRENT_TIMESTAMP
+    `).bind(
+        attemptKey,
+        nextExpiry,
+        now,
+        now,
+        nextExpiry
+    ).run();
+}
+
+async function clearLoginAttempts(env: Env, attemptKey: string): Promise<void> {
+    await env.gitanushilanam_db.prepare(
+        "DELETE FROM admin_login_attempts WHERE attempt_key = ?"
+    ).bind(attemptKey).run();
+}
+
+function parsePositiveInteger(value: string | null, fallback: number): number {
+    if (!value) {
+        return fallback;
+    }
+
+    const parsed = Number.parseInt(value, 10);
+
+    if (!Number.isInteger(parsed) || parsed < 1) {
+        return fallback;
+    }
+
+    return parsed;
+}
+
+function normalizeFilter(value: string | null, maximumLength: number): string {
+    if (!value) {
+        return "";
+    }
+
+    return Array.from(value.trim()).slice(0, maximumLength).join("");
 }
 
 export default {
@@ -190,7 +522,405 @@ export default {
             });
         }
 
-        /* REGISTRATION ENDPOINT */
+        /* =========================================================
+           ADMIN AUTHENTICATION
+        ========================================================== */
+
+        if (url.pathname === "/api/admin/login" && request.method === "POST") {
+            if (!isAllowedOrigin(request)) {
+                return jsonResponse(request, {
+                    success: false,
+                    message: "Request origin is not allowed."
+                }, 403);
+            }
+
+            try {
+                let body: unknown;
+
+                try {
+                    body = await request.json();
+                } catch {
+                    throw new ValidationError("Please send valid JSON.");
+                }
+
+                if (typeof body !== "object" || body === null || Array.isArray(body)) {
+                    throw new ValidationError("Login data must be a JSON object.");
+                }
+
+                const data = body as Record<string, unknown>;
+                const email = readRequiredText(data.email, "Email", 254).toLowerCase();
+                const password = readRequiredText(data.password, "Password", 256);
+                const turnstileToken = readRequiredText(data.turnstile_token, "Security verification", 2048);
+
+                const turnstileValid = await verifyTurnstile(
+                    turnstileToken,
+                    request,
+                    env.TURNSTILE_SECRET_KEY,
+                    "admin_login"
+                );
+
+                if (!turnstileValid) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Security verification failed. Please try again."
+                    }, 403);
+                }
+
+                const attemptKey = await getLoginAttemptKey(email, request);
+
+                if (await isLoginRateLimited(env, attemptKey)) {
+                    await writeLoginHistory(
+                        env,
+                        request,
+                        email,
+                        "login_failure",
+                        null,
+                        "rate_limited"
+                    );
+
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Too many failed login attempts. Please try again after 15 minutes."
+                    }, 429);
+                }
+
+                const admin = await env.gitanushilanam_db.prepare(`
+                    SELECT
+                        id,
+                        email,
+                        name,
+                        role,
+                        password_salt,
+                        password_hash,
+                        password_iterations
+                    FROM admin_accesslist
+                    WHERE email = ? COLLATE NOCASE
+                      AND active = 1
+                    LIMIT 1
+                `).bind(email).first<{
+                    id: number;
+                    email: string;
+                    name: string | null;
+                    role: string;
+                    password_salt: string | null;
+                    password_hash: string | null;
+                    password_iterations: number;
+                }>();
+
+                let passwordValid = false;
+
+                if (admin?.password_salt && admin.password_hash) {
+                    passwordValid = await verifyPassword(
+                        password,
+                        admin.password_salt,
+                        admin.password_hash,
+                        admin.password_iterations
+                    );
+                } else {
+                    await derivePasswordHash(password, "AAAAAAAAAAAAAAAAAAAAAA", 100000);
+                }
+
+                if (!admin || !passwordValid) {
+                    await recordFailedLogin(env, attemptKey);
+                    await writeLoginHistory(
+                        env,
+                        request,
+                        email,
+                        "login_failure",
+                        admin?.id ?? null,
+                        "invalid_credentials"
+                    );
+
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Invalid email or password."
+                    }, 401);
+                }
+
+                await clearLoginAttempts(env, attemptKey);
+
+                const expiresAt = nowEpochSeconds() + ADMIN_SESSION_SECONDS;
+                const sessionToken = generateSessionToken();
+                const sessionHash = await sha256Base64Url(sessionToken);
+
+                await env.gitanushilanam_db.batch([
+                    env.gitanushilanam_db.prepare(
+                        "DELETE FROM admin_sessions WHERE admin_id = ?"
+                    ).bind(admin.id),
+                    env.gitanushilanam_db.prepare(`
+                        INSERT INTO admin_sessions (admin_id, session_hash, expires_at, last_seen_at)
+                        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    `).bind(admin.id, sessionHash, expiresAt),
+                    env.gitanushilanam_db.prepare(`
+                        UPDATE admin_accesslist
+                        SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    `).bind(admin.id)
+                ]);
+
+                await writeLoginHistory(
+                    env,
+                    request,
+                    admin.email,
+                    "login_success",
+                    admin.id
+                );
+
+                return jsonResponse(request, {
+                    success: true,
+                    admin: {
+                        email: admin.email,
+                        name: admin.name
+                    },
+                    session_token: sessionToken,
+                    expires_at: expiresAt
+                });
+            } catch (error) {
+                if (error instanceof ValidationError) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: error.message
+                    }, 400);
+                }
+
+                console.error("Admin login error:", error);
+
+                return jsonResponse(request, {
+                    success: false,
+                    message: "Unable to sign in."
+                }, 500);
+            }
+        }
+
+        if (url.pathname === "/api/admin/logout" && request.method === "POST") {
+            if (!isAllowedOrigin(request)) {
+                return jsonResponse(request, {
+                    success: false,
+                    message: "Request origin is not allowed."
+                }, 403);
+            }
+
+            const session = await getAdminSession(request, env);
+
+            if (session) {
+                await env.gitanushilanam_db.prepare(
+                    "DELETE FROM admin_sessions WHERE id = ?"
+                ).bind(session.session_id).run();
+
+                await writeLoginHistory(
+                    env,
+                    request,
+                    session.email,
+                    "logout",
+                    session.admin_id
+                );
+            }
+
+            return jsonResponse(request, {
+                success: true
+            });
+        }
+
+        if (url.pathname === "/api/admin/session" && request.method === "GET") {
+            const session = await getAdminSession(request, env);
+
+            if (!session) {
+                return jsonResponse(request, {
+                    success: false,
+                    message: "No active admin session."
+                }, 401);
+            }
+
+            return jsonResponse(request, {
+                success: true,
+                admin: {
+                    email: session.email,
+                    name: session.name
+                },
+                expires_at: session.expires_at
+            });
+        }
+
+        /* =========================================================
+           READ-ONLY ADMIN API
+        ========================================================== */
+
+        if (url.pathname === "/admin/api/summary" && request.method === "GET") {
+            const session = await requireAdminSession(request, env);
+
+            if (session instanceof Response) {
+                return session;
+            }
+
+            const summary = await env.gitanushilanam_db.prepare(`
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(bhagavad_gita_quiz), 0) AS quiz,
+                    COALESCE(SUM(shloka_recitation), 0) AS shloka_recitation,
+                    COALESCE(SUM(animated_bg_video), 0) AS animated_bg_video,
+                    COALESCE(SUM(treasure_hunt), 0) AS treasure_hunt
+                FROM registrations
+            `).first<{
+                total: number;
+                quiz: number;
+                shloka_recitation: number;
+                animated_bg_video: number;
+                treasure_hunt: number;
+            }>();
+
+            return jsonResponse(request, {
+                success: true,
+                summary: summary ?? {
+                    total: 0,
+                    quiz: 0,
+                    shloka_recitation: 0,
+                    animated_bg_video: 0,
+                    treasure_hunt: 0
+                }
+            });
+        }
+
+        if (url.pathname === "/admin/api/filter-options" && request.method === "GET") {
+            const session = await requireAdminSession(request, env);
+
+            if (session instanceof Response) {
+                return session;
+            }
+
+            const [countryResult, stateResult] = await env.gitanushilanam_db.batch([
+                env.gitanushilanam_db.prepare(`
+                    SELECT DISTINCT country
+                    FROM registrations
+                    WHERE country IS NOT NULL AND TRIM(country) <> ''
+                    ORDER BY country COLLATE NOCASE
+                    LIMIT 250
+                `),
+                env.gitanushilanam_db.prepare(`
+                    SELECT DISTINCT state
+                    FROM registrations
+                    WHERE state IS NOT NULL AND TRIM(state) <> ''
+                    ORDER BY state COLLATE NOCASE
+                    LIMIT 500
+                `)
+            ]);
+
+            const countries = (countryResult.results as Array<{ country: string }>).map(row => row.country);
+            const states = (stateResult.results as Array<{ state: string }>).map(row => row.state);
+
+            return jsonResponse(request, {
+                success: true,
+                countries,
+                states
+            });
+        }
+
+        if (url.pathname === "/admin/api/registrations" && request.method === "GET") {
+            const session = await requireAdminSession(request, env);
+
+            if (session instanceof Response) {
+                return session;
+            }
+
+            const requestedPage = parsePositiveInteger(url.searchParams.get("page"), 1);
+            const requestedPageSize = parsePositiveInteger(url.searchParams.get("page_size"), ADMIN_PAGE_SIZE);
+            const pageSize = Math.min(requestedPageSize, ADMIN_PAGE_SIZE);
+
+            const search = normalizeFilter(url.searchParams.get("search"), 100);
+            const competition = normalizeFilter(url.searchParams.get("competition"), 50);
+            const country = normalizeFilter(url.searchParams.get("country"), 100);
+            const state = normalizeFilter(url.searchParams.get("state"), 100);
+
+            const conditions: string[] = [];
+            const bindings: Array<string | number> = [];
+
+            if (search) {
+                const pattern = `%${search.toLowerCase()}%`;
+
+                conditions.push(`(
+                    LOWER(name) LIKE ?
+                    OR LOWER(email) LIKE ?
+                    OR LOWER(phone) LIKE ?
+                    OR LOWER(whatsapp) LIKE ?
+                )`);
+
+                bindings.push(pattern, pattern, pattern, pattern);
+            }
+
+            if (competition) {
+                const competitionColumn = competitionColumns[competition];
+
+                if (!competitionColumn) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Invalid competition filter."
+                    }, 400);
+                }
+
+                conditions.push(`${competitionColumn} = 1`);
+            }
+
+            if (country) {
+                conditions.push("LOWER(country) = LOWER(?)");
+                bindings.push(country);
+            }
+
+            if (state) {
+                conditions.push("LOWER(state) = LOWER(?)");
+                bindings.push(state);
+            }
+
+            const whereClause = conditions.length > 0
+                ? `WHERE ${conditions.join(" AND ")}`
+                : "";
+
+            const countRow = await env.gitanushilanam_db.prepare(`
+                SELECT COUNT(*) AS total
+                FROM registrations
+                ${whereClause}
+            `).bind(...bindings).first<{ total: number }>();
+
+            const total = countRow?.total ?? 0;
+            const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+            const page = totalPages === 0 ? 1 : Math.min(requestedPage, totalPages);
+            const offset = (page - 1) * pageSize;
+
+            const rows = await env.gitanushilanam_db.prepare(`
+                SELECT
+                    name,
+                    email,
+                    phone,
+                    whatsapp,
+                    age,
+                    gender,
+                    institution_organization,
+                    country,
+                    state,
+                    city,
+                    heard_from,
+                    bhagavad_gita_quiz,
+                    shloka_recitation,
+                    animated_bg_video,
+                    treasure_hunt,
+                    created_at
+                FROM registrations
+                ${whereClause}
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+            `).bind(...bindings, pageSize, offset).all();
+
+            return jsonResponse(request, {
+                success: true,
+                page,
+                page_size: pageSize,
+                total,
+                total_pages: totalPages,
+                registrations: rows.results
+            });
+        }
+
+        /* =========================================================
+           EXISTING PUBLIC REGISTRATION ENDPOINT
+        ========================================================== */
 
         if (url.pathname === "/api/register" && request.method === "POST") {
             try {
@@ -219,7 +949,8 @@ export default {
                 const turnstileValid = await verifyTurnstile(
                     turnstileToken,
                     request,
-                    env.TURNSTILE_SECRET_KEY
+                    env.TURNSTILE_SECRET_KEY,
+                    "registration"
                 );
 
                 if (!turnstileValid) {
