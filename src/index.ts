@@ -57,6 +57,13 @@ const allowedGenders = [
     "prefer_not_to_say"
 ];
 
+const allowedParticipantGroups = [
+    "sub_junior",
+    "junior",
+    "senior",
+    "youth_adult"
+];
+
 const competitionColumns: Record<string, string> = {
     bhagavad_gita_quiz: "bhagavad_gita_quiz",
     shloka_recitation: "shloka_recitation",
@@ -827,6 +834,7 @@ export default {
 
             const search = normalizeFilter(url.searchParams.get("search"), 100);
             const competition = normalizeFilter(url.searchParams.get("competition"), 50);
+            const participantGroup = normalizeFilter(url.searchParams.get("participant_group"), 50);
             const country = normalizeFilter(url.searchParams.get("country"), 100);
             const state = normalizeFilter(url.searchParams.get("state"), 100);
 
@@ -857,6 +865,18 @@ export default {
                 }
 
                 conditions.push(`${competitionColumn} = 1`);
+            }
+
+            if (participantGroup) {
+                if (!allowedParticipantGroups.includes(participantGroup)) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Invalid participant group filter."
+                    }, 400);
+                }
+
+                conditions.push("participant_group = ?");
+                bindings.push(participantGroup);
             }
 
             if (country) {
@@ -891,6 +911,7 @@ export default {
                     phone,
                     whatsapp,
                     age,
+                    participant_group,
                     gender,
                     institution_organization,
                     country,
@@ -1009,6 +1030,18 @@ export default {
                     throw new ValidationError("Please enter a valid age.");
                 }
 
+                /* PARTICIPANT GROUP */
+
+                const participantGroup = readRequiredText(
+                    data.participant_group,
+                    "Participant group",
+                    30
+                );
+
+                if (!allowedParticipantGroups.includes(participantGroup)) {
+                    throw new ValidationError("Please select a valid participant group.");
+                }
+
                 /* COMPETITIONS */
 
                 if (!Array.isArray(data.competitions)) {
@@ -1072,6 +1105,7 @@ export default {
                         phone,
                         whatsapp,
                         age,
+                        participant_group,
                         gender,
                         institution_organization,
                         country,
@@ -1083,13 +1117,14 @@ export default {
                         animated_bg_video,
                         treasure_hunt
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `).bind(
                     name,
                     email,
                     phone,
                     whatsapp,
                     age,
+                    participantGroup,
                     gender,
                     institutionOrganization,
                     country,
