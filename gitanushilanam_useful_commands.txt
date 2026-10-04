@@ -1,0 +1,637 @@
+GITANUSHILANAM - USEFUL TERMINAL COMMANDS
+===========================================
+Current architecture:
+- Domain/DNS: GoDaddy
+- Website frontend: Render
+- Worker API: https://gitanushilanam-portal.panda2amrut.workers.dev
+- D1 database: gitanushilanam-db
+- D1 binding in Worker: gitanushilanam_db
+- Admin accounts: admin_accesslist
+- Registration data: registrations
+
+IMPORTANT
+---------
+1. Run commands from the gitanushilanam-portal project directory unless stated otherwise.
+2. Commands containing --remote operate on the production D1 database.
+3. Always run a SELECT first before running a DELETE.
+4. Export the database before any large or risky database change.
+5. Do not store plain-text admin passwords in D1.
+6. PBKDF2 iteration count for the current Worker must remain 100000.
+
+
+============================================================
+1. WORKER - BASIC COMMANDS
+============================================================
+
+Check Wrangler version:
+
+npx wrangler --version
+
+
+Deploy the Worker:
+
+npx wrangler deploy
+
+
+Run Worker locally:
+
+npx wrangler dev
+
+
+Watch live production Worker logs:
+
+npx wrangler tail
+
+
+Test the deployed Worker API:
+
+curl https://gitanushilanam-portal.panda2amrut.workers.dev/api/test
+
+
+Expected response should include:
+
+{"success":true,"message":"Gitanushilanam API is working"}
+
+
+============================================================
+2. TURNSTILE / WORKER SECRETS
+============================================================
+
+List Worker secret names:
+
+npx wrangler secret list
+
+
+Set or replace the Turnstile secret:
+
+npx wrangler secret put TURNSTILE_SECRET_KEY
+
+
+NOTE:
+The actual secret value cannot be displayed later.
+Only the secret name will appear in "wrangler secret list".
+
+
+============================================================
+3. ADMIN PASSWORD - CREATE OR CHANGE
+============================================================
+
+Generate a password hash for an existing admin:
+
+node tools/generate-admin-password.mjs
+
+
+The script asks for:
+
+Existing admin email:
+New admin password:
+
+
+It prints an UPDATE statement similar to:
+
+UPDATE admin_accesslist SET password_salt = '...', password_hash = '...', password_iterations = 100000, password_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE email = 'admin@example.com' COLLATE NOCASE;
+
+
+Copy the generated UPDATE statement and push it to the remote D1 database:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="PASTE_THE_GENERATED_UPDATE_SQL_HERE"
+
+
+Verify the password status:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, email, name, active, password_iterations, CASE WHEN password_hash IS NULL THEN 'NOT SET' ELSE 'SET' END AS password_status, password_changed_at FROM admin_accesslist ORDER BY id;"
+
+
+IMPORTANT:
+The current Worker supports a maximum PBKDF2 iteration count of 100000.
+
+Check that old 210000 values are not present in the Worker or password generator:
+
+grep -n "210000" src/index.ts tools/generate-admin-password.mjs
+
+
+The command above should return nothing.
+
+
+============================================================
+4. ADD A NEW ADMIN
+============================================================
+
+First add the admin email to admin_accesslist:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="INSERT INTO admin_accesslist (email, name, role, active) VALUES ('newadmin@example.com', 'Admin Name', 'admin', 1);"
+
+
+Then generate the password:
+
+node tools/generate-admin-password.mjs
+
+
+Then run the UPDATE statement printed by the generator against remote D1:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="PASTE_THE_GENERATED_UPDATE_SQL_HERE"
+
+
+Verify:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, email, name, role, active, password_iterations, CASE WHEN password_hash IS NULL THEN 'NOT SET' ELSE 'SET' END AS password_status FROM admin_accesslist ORDER BY id;"
+
+
+============================================================
+5. VIEW ADMIN USERS
+============================================================
+
+Show all admins:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, email, name, role, active, password_iterations, last_login_at, created_at FROM admin_accesslist ORDER BY id;"
+
+
+Show active admins only:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, email, name, role, last_login_at FROM admin_accesslist WHERE active = 1 ORDER BY id;"
+
+
+Show admins without a password:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, email, name FROM admin_accesslist WHERE password_hash IS NULL ORDER BY id;"
+
+
+Find one admin by email:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT * FROM admin_accesslist WHERE email = 'admin@example.com' COLLATE NOCASE;"
+
+
+============================================================
+6. DISABLE AN ADMIN - SAFER THAN DELETE
+============================================================
+
+Recommended approach when somebody should no longer have access.
+
+First inspect the account:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, email, name, active FROM admin_accesslist WHERE email = 'admin@example.com' COLLATE NOCASE;"
+
+
+Disable the account:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="UPDATE admin_accesslist SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE email = 'admin@example.com' COLLATE NOCASE;"
+
+
+Remove all currently active sessions for that admin:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="DELETE FROM admin_sessions WHERE admin_id = (SELECT id FROM admin_accesslist WHERE email = 'admin@example.com' COLLATE NOCASE);"
+
+
+Re-enable later if required:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="UPDATE admin_accesslist SET active = 1, updated_at = CURRENT_TIMESTAMP WHERE email = 'admin@example.com' COLLATE NOCASE;"
+
+
+============================================================
+7. PERMANENTLY DELETE AN ADMIN
+============================================================
+
+WARNING:
+Prefer disabling unless you really want the admin record removed.
+
+Preview first:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, email, name, active FROM admin_accesslist WHERE email = 'admin@example.com' COLLATE NOCASE;"
+
+
+Delete active sessions first:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="DELETE FROM admin_sessions WHERE admin_id = (SELECT id FROM admin_accesslist WHERE email = 'admin@example.com' COLLATE NOCASE);"
+
+
+Delete the admin:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="DELETE FROM admin_accesslist WHERE email = 'admin@example.com' COLLATE NOCASE;"
+
+
+Verify:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, email, name FROM admin_accesslist ORDER BY id;"
+
+
+Optional - remove that email's authentication history too:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="DELETE FROM admin_login_history WHERE email_attempted = 'admin@example.com' COLLATE NOCASE;"
+
+
+============================================================
+8. VIEW REGISTRATIONS
+============================================================
+
+Total registrations:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT COUNT(*) AS total_registrations FROM registrations;"
+
+
+Show the newest 30 registrations:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, name, email, phone, age, participant_group, city, state, country, created_at FROM registrations ORDER BY id DESC LIMIT 30;"
+
+
+Find a registration by email:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT * FROM registrations WHERE email = 'participant@example.com' COLLATE NOCASE;"
+
+
+Find a registration by phone:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT * FROM registrations WHERE phone = '+919876543210';"
+
+
+Find a registration by ID:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT * FROM registrations WHERE id = 123;"
+
+
+Search participant name:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, name, email, phone, participant_group, created_at FROM registrations WHERE LOWER(name) LIKE LOWER('%search text%') ORDER BY id DESC;"
+
+
+============================================================
+9. DELETE A REGISTRATION
+============================================================
+
+SAFEST METHOD:
+Find the participant first and delete using the registration ID.
+
+Preview:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, name, email, phone, created_at FROM registrations WHERE email = 'participant@example.com' COLLATE NOCASE;"
+
+
+Then delete by ID:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="DELETE FROM registrations WHERE id = 123;"
+
+
+Verify:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, name, email FROM registrations WHERE id = 123;"
+
+
+Because registration email is unique, you can also delete directly by email:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="DELETE FROM registrations WHERE email = 'participant@example.com' COLLATE NOCASE;"
+
+
+Delete by phone if necessary:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="DELETE FROM registrations WHERE phone = '+919876543210';"
+
+
+============================================================
+10. REGISTRATION STATISTICS
+============================================================
+
+Competition counts:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT COUNT(*) AS total_registrations, COALESCE(SUM(bhagavad_gita_quiz), 0) AS quiz, COALESCE(SUM(shloka_recitation), 0) AS shloka_recitation, COALESCE(SUM(animated_bg_video), 0) AS animated_video, COALESCE(SUM(treasure_hunt), 0) AS treasure_hunt FROM registrations;"
+
+
+Participant-group counts:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT COALESCE(participant_group, 'not_set') AS participant_group, COUNT(*) AS total FROM registrations GROUP BY participant_group ORDER BY total DESC;"
+
+
+Senior registrations:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, name, email, age, participant_group FROM registrations WHERE participant_group = 'senior' ORDER BY id DESC;"
+
+
+Youth / Adult registrations:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, name, email, age, participant_group FROM registrations WHERE participant_group = 'youth_adult' ORDER BY id DESC;"
+
+
+Registrations by country:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT country, COUNT(*) AS total FROM registrations GROUP BY country ORDER BY total DESC;"
+
+
+Registrations by state:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT state, COUNT(*) AS total FROM registrations GROUP BY state ORDER BY total DESC;"
+
+
+============================================================
+11. ADMIN LOGIN HISTORY
+============================================================
+
+Show latest 30 login events:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, email_attempted, event_type, failure_reason, ip_address, created_at FROM admin_login_history ORDER BY id DESC LIMIT 30;"
+
+
+Only successful logins:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT email_attempted, ip_address, user_agent, created_at FROM admin_login_history WHERE event_type = 'login_success' ORDER BY id DESC LIMIT 30;"
+
+
+Only failed logins:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT email_attempted, failure_reason, ip_address, created_at FROM admin_login_history WHERE event_type = 'login_failure' ORDER BY id DESC LIMIT 30;"
+
+
+============================================================
+12. ADMIN SESSIONS
+============================================================
+
+Show active/non-expired sessions:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT s.id, a.email, s.expires_at, s.created_at, s.last_seen_at FROM admin_sessions AS s JOIN admin_accesslist AS a ON a.id = s.admin_id WHERE s.expires_at > CAST(strftime('%s','now') AS INTEGER) ORDER BY s.id DESC;"
+
+
+Delete all sessions for one admin:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="DELETE FROM admin_sessions WHERE admin_id = (SELECT id FROM admin_accesslist WHERE email = 'admin@example.com' COLLATE NOCASE);"
+
+
+Force logout of every admin:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="DELETE FROM admin_sessions;"
+
+
+Remove expired sessions:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="DELETE FROM admin_sessions WHERE expires_at <= CAST(strftime('%s','now') AS INTEGER);"
+
+
+============================================================
+13. CLEAN UP EXPIRED LOGIN RATE-LIMIT RECORDS
+============================================================
+
+View login-attempt records:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT attempt_key, attempts, window_expires_at, last_attempt_at FROM admin_login_attempts ORDER BY last_attempt_at DESC;"
+
+
+Remove expired login-attempt records:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="DELETE FROM admin_login_attempts WHERE window_expires_at <= CAST(strftime('%s','now') AS INTEGER);"
+
+
+============================================================
+14. DATABASE STRUCTURE / INSPECTION
+============================================================
+
+List all tables:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;"
+
+
+Show registrations table columns:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="PRAGMA table_info(registrations);"
+
+
+Show admin_accesslist columns:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="PRAGMA table_info(admin_accesslist);"
+
+
+Show admin_sessions columns:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="PRAGMA table_info(admin_sessions);"
+
+
+Show database indexes:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT name, tbl_name FROM sqlite_schema WHERE type = 'index' ORDER BY tbl_name, name;"
+
+
+Show D1 database information:
+
+npx wrangler d1 info gitanushilanam-db
+
+
+List D1 databases:
+
+npx wrangler d1 list
+
+
+============================================================
+15. DATABASE BACKUP / EXPORT
+============================================================
+
+Recommended before deleting many rows or applying an important migration.
+
+Export the full remote database:
+
+npx wrangler d1 export gitanushilanam-db --remote --output=./gitanushilanam-db-backup.sql
+
+
+Export registrations only:
+
+npx wrangler d1 export gitanushilanam-db --remote --table=registrations --output=./registrations-backup.sql
+
+
+Export admin access list only:
+
+npx wrangler d1 export gitanushilanam-db --remote --table=admin_accesslist --output=./admin-accesslist-backup.sql
+
+
+Export schema only:
+
+npx wrangler d1 export gitanushilanam-db --remote --output=./gitanushilanam-schema.sql --no-data
+
+
+IMPORTANT:
+Keep database backup files private because they contain participant information.
+
+
+============================================================
+16. DATABASE MIGRATIONS
+============================================================
+
+Create a new migration:
+
+npx wrangler d1 migrations create gitanushilanam-db migration_name
+
+
+Example:
+
+npx wrangler d1 migrations create gitanushilanam-db add_participant_group
+
+
+List migration status:
+
+npx wrangler d1 migrations list gitanushilanam-db --remote
+
+
+Apply pending migrations to production:
+
+npx wrangler d1 migrations apply gitanushilanam-db --remote
+
+
+After applying a migration, verify the changed table:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="PRAGMA table_info(registrations);"
+
+
+============================================================
+17. EXECUTE A SQL FILE DIRECTLY
+============================================================
+
+Run a SQL file against remote D1:
+
+npx wrangler d1 execute gitanushilanam-db --remote --file=filename.sql
+
+
+Example:
+
+npx wrangler d1 execute gitanushilanam-db --remote --file=migrations/0003_add_participant_group.sql
+
+
+NOTE:
+Normally use "d1 migrations apply" for files created through the migration system.
+Use "d1 execute --file" for standalone SQL files when appropriate.
+
+
+============================================================
+18. USEFUL SAFETY CHECKS BEFORE DEPLOY
+============================================================
+
+Check that PBKDF2 has not accidentally returned to 210000 iterations:
+
+grep -n "210000" src/index.ts tools/generate-admin-password.mjs
+
+
+Check current password iteration values in D1:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT email, password_iterations FROM admin_accesslist ORDER BY id;"
+
+
+Check TypeScript file for participant_group references:
+
+grep -n "participant_group" src/index.ts
+
+
+Check frontend JS for participant_group references:
+
+grep -n "participant_group" js/registration.js js/admin.js
+
+
+Deploy:
+
+npx wrangler deploy
+
+
+Then watch logs:
+
+npx wrangler tail
+
+
+============================================================
+19. AFTER DEPLOY - QUICK HEALTH CHECK
+============================================================
+
+Test Worker:
+
+curl https://gitanushilanam-portal.panda2amrut.workers.dev/api/test
+
+
+Check total registrations:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT COUNT(*) AS total_registrations FROM registrations;"
+
+
+Check latest login history:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT email_attempted, event_type, failure_reason, created_at FROM admin_login_history ORDER BY id DESC LIMIT 10;"
+
+
+Check latest registrations:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, name, email, participant_group, created_at FROM registrations ORDER BY id DESC LIMIT 10;"
+
+
+============================================================
+20. COMMON MISTAKES TO AVOID
+============================================================
+
+Correct:
+
+npx wrangler deploy
+
+
+Incorrect:
+
+npx wrangle deploy
+
+
+Always include --remote when intentionally working with the production D1 database.
+
+Before DELETE:
+
+1. Run SELECT using the same WHERE condition.
+2. Confirm the correct row.
+3. Export/backup first if the change is important.
+4. Run DELETE.
+5. Run SELECT again to verify.
+
+
+Never manually store a plain password like:
+
+password = 'mypassword'
+
+
+Only store:
+
+password_salt
+password_hash
+password_iterations
+
+
+Current expected password iteration count:
+
+100000
+
+
+============================================================
+21. QUICK DAILY COMMAND SET
+============================================================
+
+Worker logs:
+
+npx wrangler tail
+
+
+Deploy:
+
+npx wrangler deploy
+
+
+Total registrations:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT COUNT(*) AS total_registrations FROM registrations;"
+
+
+Latest registrations:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, name, email, phone, participant_group, created_at FROM registrations ORDER BY id DESC LIMIT 20;"
+
+
+Admins:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT id, email, name, active, last_login_at FROM admin_accesslist ORDER BY id;"
+
+
+Latest admin login activity:
+
+npx wrangler d1 execute gitanushilanam-db --remote --command="SELECT email_attempted, event_type, failure_reason, created_at FROM admin_login_history ORDER BY id DESC LIMIT 20;"
+
+
+Backup:
+
+npx wrangler d1 export gitanushilanam-db --remote --output=./gitanushilanam-db-backup.sql
+
+
+============================================================
+END
+============================================================
