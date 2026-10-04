@@ -135,7 +135,7 @@ function getCorsHeaders(request: Request): Record<string, string> {
     const origin = request.headers.get("Origin");
 
     const headers: Record<string, string> = {
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
         "Vary": "Origin",
         "Cache-Control": "no-store",
@@ -426,6 +426,97 @@ async function requireAdminSession(request: Request, env: Env): Promise<AdminSes
     return session;
 }
 
+const missingParticipantGroupCondition = `(
+    participant_group IS NULL
+    OR TRIM(participant_group) = ''
+    OR participant_group NOT IN ('sub_junior', 'junior', 'senior', 'youth_adult')
+)`;
+
+const missingCountryCondition = `(
+    country IS NULL
+    OR TRIM(country) = ''
+)`;
+
+const missingStateCondition = `(
+    state IS NULL
+    OR TRIM(state) = ''
+)`;
+
+const missingCityCondition = `(
+    city IS NULL
+    OR TRIM(city) = ''
+)`;
+
+const needsReviewCondition = `(
+    ${missingParticipantGroupCondition}
+    OR ${missingCountryCondition}
+    OR ${missingStateCondition}
+    OR ${missingCityCondition}
+)`;
+
+async function requireSuperAdminSession(
+    request: Request,
+    env: Env
+): Promise<AdminSession | Response> {
+    const session = await requireAdminSession(request, env);
+
+    if (session instanceof Response) {
+        return session;
+    }
+
+    if (session.role !== "super_admin") {
+        return jsonResponse(request, {
+            success: false,
+            message: "Super Admin access is required for this operation."
+        }, 403);
+    }
+
+    return session;
+}
+
+function parseRegistrationId(value: string): number | null {
+    if (!/^\d+$/u.test(value)) {
+        return null;
+    }
+
+    const parsed = Number.parseInt(value, 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function normalizeSnapshotValue(value: unknown): unknown {
+    return value === undefined ? null : value;
+}
+
+function getChangedSnapshots(
+    oldSnapshot: Record<string, unknown>,
+    newSnapshot: Record<string, unknown>
+): {
+    oldValues: Record<string, unknown>;
+    newValues: Record<string, unknown>;
+    changedFields: string[];
+} {
+    const oldValues: Record<string, unknown> = {};
+    const newValues: Record<string, unknown> = {};
+    const changedFields: string[] = [];
+
+    for (const key of Object.keys(newSnapshot)) {
+        const oldValue = normalizeSnapshotValue(oldSnapshot[key]);
+        const newValue = normalizeSnapshotValue(newSnapshot[key]);
+
+        if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) {
+            oldValues[key] = oldValue;
+            newValues[key] = newValue;
+            changedFields.push(key);
+        }
+    }
+
+    return {
+        oldValues,
+        newValues,
+        changedFields
+    };
+}
+
 async function getLoginAttemptKey(email: string, request: Request): Promise<string> {
     const ipAddress = getClientIp(request) ?? "unknown";
     return sha256Base64Url(`${email}|${ipAddress}`);
@@ -677,7 +768,8 @@ export default {
                     success: true,
                     admin: {
                         email: admin.email,
-                        name: admin.name
+                        name: admin.name,
+                        role: admin.role
                     },
                     session_token: sessionToken,
                     expires_at: expiresAt
@@ -742,14 +834,20 @@ export default {
                 success: true,
                 admin: {
                     email: session.email,
-                    name: session.name
+                    name: session.name,
+                    role: session.role
                 },
                 expires_at: session.expires_at
             });
         }
 
         /* =========================================================
-           READ-ONLY ADMIN API
+           ADMIN DASHBOARD API
+
+           Normal admins remain read-only.
+           Super Admin can correct registration data.
+           There are intentionally no registration/admin delete
+           endpoints in this web API.
         ========================================================== */
 
         if (url.pathname === "/admin/api/summary" && request.method === "GET") {
@@ -775,6 +873,73 @@ export default {
                 treasure_hunt: number;
             }>();
 
+            const participantGroups = await env.gitanushilanam_db.prepare(`
+                SELECT
+                    COALESCE(SUM(CASE WHEN participant_group = 'sub_junior' THEN 1 ELSE 0 END), 0) AS sub_junior,
+                    COALESCE(SUM(CASE WHEN participant_group = 'junior' THEN 1 ELSE 0 END), 0) AS junior,
+                    COALESCE(SUM(CASE WHEN participant_group = 'senior' THEN 1 ELSE 0 END), 0) AS senior,
+                    COALESCE(SUM(CASE WHEN participant_group = 'youth_adult' THEN 1 ELSE 0 END), 0) AS youth_adult,
+                    COALESCE(SUM(CASE WHEN ${missingParticipantGroupCondition} THEN 1 ELSE 0 END), 0) AS unassigned
+                FROM registrations
+            `).first<{
+                sub_junior: number;
+                junior: number;
+                senior: number;
+                youth_adult: number;
+                unassigned: number;
+            }>();
+
+            const review = await env.gitanushilanam_db.prepare(`
+                SELECT
+                    COALESCE(SUM(CASE WHEN ${needsReviewCondition} THEN 1 ELSE 0 END), 0) AS needs_review,
+                    COALESCE(SUM(CASE WHEN ${missingParticipantGroupCondition} THEN 1 ELSE 0 END), 0) AS missing_participant_group,
+                    COALESCE(SUM(CASE WHEN ${missingCountryCondition} THEN 1 ELSE 0 END), 0) AS missing_country,
+                    COALESCE(SUM(CASE WHEN ${missingStateCondition} THEN 1 ELSE 0 END), 0) AS missing_state,
+                    COALESCE(SUM(CASE WHEN ${missingCityCondition} THEN 1 ELSE 0 END), 0) AS missing_city,
+                    COALESCE(SUM(CASE WHEN NOT ${needsReviewCondition} THEN 1 ELSE 0 END), 0) AS complete
+                FROM registrations
+            `).first<{
+                needs_review: number;
+                missing_participant_group: number;
+                missing_country: number;
+                missing_state: number;
+                missing_city: number;
+                complete: number;
+            }>();
+
+            const dailyRows = await env.gitanushilanam_db.prepare(`
+                SELECT
+                    DATE(created_at) AS date,
+                    COUNT(*) AS count
+                FROM registrations
+                WHERE DATE(created_at) >= DATE('now', '-29 days')
+                GROUP BY DATE(created_at)
+                ORDER BY DATE(created_at)
+            `).all<{ date: string; count: number }>();
+
+            const dailyMap = new Map<string, number>();
+
+            for (const row of dailyRows.results) {
+                dailyMap.set(row.date, Number(row.count) || 0);
+            }
+
+            const dailyRegistrations: Array<{ date: string; count: number }> = [];
+            const today = new Date();
+
+            for (let offset = 29; offset >= 0; offset -= 1) {
+                const date = new Date(Date.UTC(
+                    today.getUTCFullYear(),
+                    today.getUTCMonth(),
+                    today.getUTCDate() - offset
+                ));
+
+                const key = date.toISOString().slice(0, 10);
+                dailyRegistrations.push({
+                    date: key,
+                    count: dailyMap.get(key) ?? 0
+                });
+            }
+
             return jsonResponse(request, {
                 success: true,
                 summary: summary ?? {
@@ -783,7 +948,23 @@ export default {
                     shloka_recitation: 0,
                     animated_bg_video: 0,
                     treasure_hunt: 0
-                }
+                },
+                participant_groups: participantGroups ?? {
+                    sub_junior: 0,
+                    junior: 0,
+                    senior: 0,
+                    youth_adult: 0,
+                    unassigned: 0
+                },
+                review: review ?? {
+                    needs_review: 0,
+                    missing_participant_group: 0,
+                    missing_country: 0,
+                    missing_state: 0,
+                    missing_city: 0,
+                    complete: 0
+                },
+                daily_registrations: dailyRegistrations
             });
         }
 
@@ -811,13 +992,101 @@ export default {
                 `)
             ]);
 
-            const countries = (countryResult.results as Array<{ country: string }>).map(row => row.country);
-            const states = (stateResult.results as Array<{ state: string }>).map(row => row.state);
+            const countries = (countryResult.results as Array<{ country: string }>).map(
+                row => row.country
+            );
+            const states = (stateResult.results as Array<{ state: string }>).map(
+                row => row.state
+            );
 
             return jsonResponse(request, {
                 success: true,
                 countries,
                 states
+            });
+        }
+
+        if (url.pathname === "/admin/api/admins" && request.method === "GET") {
+            const session = await requireSuperAdminSession(request, env);
+
+            if (session instanceof Response) {
+                return session;
+            }
+
+            const rows = await env.gitanushilanam_db.prepare(`
+                SELECT
+                    id,
+                    email,
+                    name,
+                    role,
+                    active,
+                    CASE
+                        WHEN password_hash IS NOT NULL AND password_salt IS NOT NULL THEN 1
+                        ELSE 0
+                    END AS password_set,
+                    password_changed_at,
+                    last_login_at,
+                    created_at,
+                    updated_at
+                FROM admin_accesslist
+                ORDER BY
+                    CASE WHEN role = 'super_admin' THEN 0 ELSE 1 END,
+                    name COLLATE NOCASE,
+                    email COLLATE NOCASE
+            `).all();
+
+            return jsonResponse(request, {
+                success: true,
+                admins: rows.results
+            });
+        }
+
+        if (url.pathname === "/admin/api/audit-log" && request.method === "GET") {
+            const session = await requireSuperAdminSession(request, env);
+
+            if (session instanceof Response) {
+                return session;
+            }
+
+            const requestedPage = parsePositiveInteger(url.searchParams.get("page"), 1);
+            const requestedPageSize = parsePositiveInteger(url.searchParams.get("page_size"), 50);
+            const pageSize = Math.min(requestedPageSize, 100);
+
+            const countRow = await env.gitanushilanam_db.prepare(`
+                SELECT COUNT(*) AS total
+                FROM admin_audit_log
+            `).first<{ total: number }>();
+
+            const total = countRow?.total ?? 0;
+            const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+            const page = totalPages === 0 ? 1 : Math.min(requestedPage, totalPages);
+            const offset = (page - 1) * pageSize;
+
+            const rows = await env.gitanushilanam_db.prepare(`
+                SELECT
+                    id,
+                    admin_id,
+                    admin_email,
+                    admin_role,
+                    action,
+                    entity_type,
+                    entity_id,
+                    old_values,
+                    new_values,
+                    ip_address,
+                    created_at
+                FROM admin_audit_log
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+            `).bind(pageSize, offset).all();
+
+            return jsonResponse(request, {
+                success: true,
+                page,
+                page_size: pageSize,
+                total,
+                total_pages: totalPages,
+                entries: rows.results
             });
         }
 
@@ -829,14 +1098,21 @@ export default {
             }
 
             const requestedPage = parsePositiveInteger(url.searchParams.get("page"), 1);
-            const requestedPageSize = parsePositiveInteger(url.searchParams.get("page_size"), ADMIN_PAGE_SIZE);
+            const requestedPageSize = parsePositiveInteger(
+                url.searchParams.get("page_size"),
+                ADMIN_PAGE_SIZE
+            );
             const pageSize = Math.min(requestedPageSize, ADMIN_PAGE_SIZE);
 
             const search = normalizeFilter(url.searchParams.get("search"), 100);
             const competition = normalizeFilter(url.searchParams.get("competition"), 50);
-            const participantGroup = normalizeFilter(url.searchParams.get("participant_group"), 50);
+            const participantGroup = normalizeFilter(
+                url.searchParams.get("participant_group"),
+                50
+            );
             const country = normalizeFilter(url.searchParams.get("country"), 100);
             const state = normalizeFilter(url.searchParams.get("state"), 100);
+            const reviewStatus = normalizeFilter(url.searchParams.get("review"), 50);
 
             const conditions: string[] = [];
             const bindings: Array<string | number> = [];
@@ -889,6 +1165,27 @@ export default {
                 bindings.push(state);
             }
 
+            if (reviewStatus) {
+                if (reviewStatus === "needs_review") {
+                    conditions.push(needsReviewCondition);
+                } else if (reviewStatus === "complete") {
+                    conditions.push(`NOT ${needsReviewCondition}`);
+                } else if (reviewStatus === "missing_participant_group") {
+                    conditions.push(missingParticipantGroupCondition);
+                } else if (reviewStatus === "missing_country") {
+                    conditions.push(missingCountryCondition);
+                } else if (reviewStatus === "missing_state") {
+                    conditions.push(missingStateCondition);
+                } else if (reviewStatus === "missing_city") {
+                    conditions.push(missingCityCondition);
+                } else {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Invalid data review filter."
+                    }, 400);
+                }
+            }
+
             const whereClause = conditions.length > 0
                 ? `WHERE ${conditions.join(" AND ")}`
                 : "";
@@ -906,6 +1203,7 @@ export default {
 
             const rows = await env.gitanushilanam_db.prepare(`
                 SELECT
+                    id,
                     name,
                     email,
                     phone,
@@ -922,7 +1220,8 @@ export default {
                     shloka_recitation,
                     animated_bg_video,
                     treasure_hunt,
-                    created_at
+                    created_at,
+                    CASE WHEN ${needsReviewCondition} THEN 1 ELSE 0 END AS needs_review
                 FROM registrations
                 ${whereClause}
                 ORDER BY id DESC
@@ -937,6 +1236,319 @@ export default {
                 total_pages: totalPages,
                 registrations: rows.results
             });
+        }
+
+        const registrationUpdateMatch = url.pathname.match(
+            /^\/admin\/api\/registrations\/(\d+)$/u
+        );
+
+        if (registrationUpdateMatch && request.method === "PATCH") {
+            if (!isAllowedOrigin(request)) {
+                return jsonResponse(request, {
+                    success: false,
+                    message: "Request origin is not allowed."
+                }, 403);
+            }
+
+            const session = await requireSuperAdminSession(request, env);
+
+            if (session instanceof Response) {
+                return session;
+            }
+
+            const registrationId = parseRegistrationId(registrationUpdateMatch[1]);
+
+            if (!registrationId) {
+                return jsonResponse(request, {
+                    success: false,
+                    message: "Invalid registration ID."
+                }, 400);
+            }
+
+            try {
+                let body: unknown;
+
+                try {
+                    body = await request.json();
+                } catch {
+                    throw new ValidationError("Please send valid JSON.");
+                }
+
+                if (typeof body !== "object" || body === null || Array.isArray(body)) {
+                    throw new ValidationError("Registration data must be a JSON object.");
+                }
+
+                const data = body as Record<string, unknown>;
+                const name = readRequiredText(data.name, "Name", 100);
+                const email = readRequiredText(data.email, "Email", 254).toLowerCase();
+                const phone = readPhoneNumber(data.phone, "Phone number");
+                const whatsapp = readPhoneNumber(data.whatsapp, "WhatsApp number");
+                const gender = readRequiredText(data.gender, "Gender", 30);
+
+                if (!allowedGenders.includes(gender)) {
+                    throw new ValidationError("Please select a valid gender.");
+                }
+
+                const institutionOrganization = readOptionalText(
+                    data.institution_organization,
+                    "School / Institute / Organization",
+                    200
+                );
+
+                const country = readRequiredText(data.country, "Country", 100);
+                const state = readRequiredText(data.state, "State", 100);
+                const city = readRequiredText(data.city, "City", 100);
+                const heardFrom = readRequiredText(
+                    data.heard_from,
+                    "How participant heard about us",
+                    200
+                );
+
+                if (typeof data.age !== "number") {
+                    throw new ValidationError("Age must be a number.");
+                }
+
+                const age = data.age;
+
+                if (!Number.isInteger(age) || age < 3 || age > 120) {
+                    throw new ValidationError("Please enter a valid age.");
+                }
+
+                const participantGroup = readRequiredText(
+                    data.participant_group,
+                    "Participant group",
+                    30
+                );
+
+                if (!allowedParticipantGroups.includes(participantGroup)) {
+                    throw new ValidationError("Please select a valid participant group.");
+                }
+
+                if (!Array.isArray(data.competitions)) {
+                    throw new ValidationError("Please select at least one competition.");
+                }
+
+                const competitions: string[] = [];
+
+                for (const competition of data.competitions) {
+                    if (typeof competition !== "string") {
+                        throw new ValidationError("Each competition must be text.");
+                    }
+
+                    if (!allowedCompetitions.includes(competition)) {
+                        throw new ValidationError("Invalid competition selected.");
+                    }
+
+                    if (!competitions.includes(competition)) {
+                        competitions.push(competition);
+                    }
+                }
+
+                if (competitions.length === 0) {
+                    throw new ValidationError("Please select at least one competition.");
+                }
+
+                const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
+
+                if (!emailPattern.test(email)) {
+                    throw new ValidationError("Please enter a valid email address.");
+                }
+
+                const existing = await env.gitanushilanam_db.prepare(`
+                    SELECT
+                        id,
+                        name,
+                        email,
+                        phone,
+                        whatsapp,
+                        age,
+                        participant_group,
+                        gender,
+                        institution_organization,
+                        country,
+                        state,
+                        city,
+                        heard_from,
+                        bhagavad_gita_quiz,
+                        shloka_recitation,
+                        animated_bg_video,
+                        treasure_hunt,
+                        created_at
+                    FROM registrations
+                    WHERE id = ?
+                    LIMIT 1
+                `).bind(registrationId).first<Record<string, unknown>>();
+
+                if (!existing) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Registration not found."
+                    }, 404);
+                }
+
+                const duplicate = await env.gitanushilanam_db.prepare(`
+                    SELECT id
+                    FROM registrations
+                    WHERE id <> ?
+                      AND (
+                          LOWER(email) = LOWER(?)
+                          OR phone = ?
+                      )
+                    LIMIT 1
+                `).bind(registrationId, email, phone).first<{ id: number }>();
+
+                if (duplicate) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Another registration already uses this email or phone number."
+                    }, 409);
+                }
+
+                const bhagavadGitaQuiz = competitions.includes("bhagavad_gita_quiz") ? 1 : 0;
+                const shlokaRecitation = competitions.includes("shloka_recitation") ? 1 : 0;
+                const animatedBgVideo = competitions.includes("animated_bg_video") ? 1 : 0;
+                const treasureHunt = competitions.includes("treasure_hunt") ? 1 : 0;
+
+                const oldSnapshot: Record<string, unknown> = {
+                    name: existing.name,
+                    email: existing.email,
+                    phone: existing.phone,
+                    whatsapp: existing.whatsapp,
+                    age: existing.age,
+                    participant_group: existing.participant_group,
+                    gender: existing.gender,
+                    institution_organization: existing.institution_organization,
+                    country: existing.country,
+                    state: existing.state,
+                    city: existing.city,
+                    heard_from: existing.heard_from,
+                    bhagavad_gita_quiz: existing.bhagavad_gita_quiz,
+                    shloka_recitation: existing.shloka_recitation,
+                    animated_bg_video: existing.animated_bg_video,
+                    treasure_hunt: existing.treasure_hunt
+                };
+
+                const newSnapshot: Record<string, unknown> = {
+                    name,
+                    email,
+                    phone,
+                    whatsapp,
+                    age,
+                    participant_group: participantGroup,
+                    gender,
+                    institution_organization: institutionOrganization,
+                    country,
+                    state,
+                    city,
+                    heard_from: heardFrom,
+                    bhagavad_gita_quiz: bhagavadGitaQuiz,
+                    shloka_recitation: shlokaRecitation,
+                    animated_bg_video: animatedBgVideo,
+                    treasure_hunt: treasureHunt
+                };
+
+                const changes = getChangedSnapshots(oldSnapshot, newSnapshot);
+
+                if (changes.changedFields.length === 0) {
+                    return jsonResponse(request, {
+                        success: true,
+                        no_changes: true,
+                        changed_fields: []
+                    });
+                }
+
+                const updateStatement = env.gitanushilanam_db.prepare(`
+                    UPDATE registrations
+                    SET
+                        name = ?,
+                        email = ?,
+                        phone = ?,
+                        whatsapp = ?,
+                        age = ?,
+                        participant_group = ?,
+                        gender = ?,
+                        institution_organization = ?,
+                        country = ?,
+                        state = ?,
+                        city = ?,
+                        heard_from = ?,
+                        bhagavad_gita_quiz = ?,
+                        shloka_recitation = ?,
+                        animated_bg_video = ?,
+                        treasure_hunt = ?
+                    WHERE id = ?
+                `).bind(
+                    name,
+                    email,
+                    phone,
+                    whatsapp,
+                    age,
+                    participantGroup,
+                    gender,
+                    institutionOrganization,
+                    country,
+                    state,
+                    city,
+                    heardFrom,
+                    bhagavadGitaQuiz,
+                    shlokaRecitation,
+                    animatedBgVideo,
+                    treasureHunt,
+                    registrationId
+                );
+
+                const auditStatement = env.gitanushilanam_db.prepare(`
+                    INSERT INTO admin_audit_log (
+                        admin_id,
+                        admin_email,
+                        admin_role,
+                        action,
+                        entity_type,
+                        entity_id,
+                        old_values,
+                        new_values,
+                        ip_address,
+                        user_agent
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `).bind(
+                    session.admin_id,
+                    session.email,
+                    session.role,
+                    "registration_update",
+                    "registration",
+                    String(registrationId),
+                    JSON.stringify(changes.oldValues),
+                    JSON.stringify(changes.newValues),
+                    getClientIp(request),
+                    getUserAgent(request)
+                );
+
+                await env.gitanushilanam_db.batch([
+                    updateStatement,
+                    auditStatement
+                ]);
+
+                return jsonResponse(request, {
+                    success: true,
+                    no_changes: false,
+                    changed_fields: changes.changedFields
+                });
+            } catch (error) {
+                if (error instanceof ValidationError) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: error.message
+                    }, 400);
+                }
+
+                console.error("Super Admin registration update error:", error);
+
+                return jsonResponse(request, {
+                    success: false,
+                    message: "Unable to update the registration."
+                }, 500);
+            }
         }
 
         /* =========================================================
