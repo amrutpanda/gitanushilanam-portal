@@ -1,10 +1,19 @@
 import { parsePhoneNumberFromString } from "libphonenumber-js/max";
+import {
+    ADMIN_EMAIL_MAX_RECIPIENTS,
+    type AdminEmailParticipant,
+    buildResendBatchEmail,
+    findUnknownPlaceholders,
+    ResendApiError,
+    sendResendBatch
+} from "./email";
 
 class ValidationError extends Error {}
 
 interface Env {
     gitanushilanam_db: D1Database;
     TURNSTILE_SECRET_KEY: string;
+    RESEND_API_KEY: string;
 }
 
 interface TurnstileResult {
@@ -481,6 +490,32 @@ function parseRegistrationId(value: string): number | null {
 
     const parsed = Number.parseInt(value, 10);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function readRegistrationIds(value: unknown): number[] {
+    if (!Array.isArray(value) || value.length === 0) {
+        throw new ValidationError("Select at least one participant.");
+    }
+
+    if (value.length > ADMIN_EMAIL_MAX_RECIPIENTS) {
+        throw new ValidationError(
+            `Select no more than ${ADMIN_EMAIL_MAX_RECIPIENTS} participants at a time.`
+        );
+    }
+
+    const registrationIds: number[] = [];
+
+    for (const item of value) {
+        if (!Number.isInteger(item) || item <= 0) {
+            throw new ValidationError("Every selected participant must have a valid ID.");
+        }
+
+        if (!registrationIds.includes(item)) {
+            registrationIds.push(item);
+        }
+    }
+
+    return registrationIds;
 }
 
 function normalizeSnapshotValue(value: unknown): unknown {
@@ -1236,6 +1271,243 @@ export default {
                 total_pages: totalPages,
                 registrations: rows.results
             });
+        }
+
+        if (url.pathname === "/admin/api/emails/send" && request.method === "POST") {
+            if (!isAllowedOrigin(request)) {
+                return jsonResponse(request, {
+                    success: false,
+                    message: "Request origin is not allowed."
+                }, 403);
+            }
+
+            const session = await requireSuperAdminSession(request, env);
+
+            if (session instanceof Response) {
+                return session;
+            }
+
+            try {
+                let body: unknown;
+
+                try {
+                    body = await request.json();
+                } catch {
+                    throw new ValidationError("Please send valid JSON.");
+                }
+
+                if (typeof body !== "object" || body === null || Array.isArray(body)) {
+                    throw new ValidationError("Email data must be a JSON object.");
+                }
+
+                const data = body as Record<string, unknown>;
+                const registrationIds = readRegistrationIds(data.registration_ids);
+                const subjectTemplate = readRequiredText(data.subject, "Email subject", 200);
+                const messageTemplate = readRequiredText(data.message, "Email message", 10000);
+                const requestId = readRequiredText(data.request_id, "Email request ID", 80);
+
+                if (!/^[A-Za-z0-9_-]{16,80}$/u.test(requestId)) {
+                    throw new ValidationError("Email request ID is invalid.");
+                }
+
+                const unknownPlaceholders = findUnknownPlaceholders(
+                    subjectTemplate,
+                    messageTemplate
+                );
+
+                if (unknownPlaceholders.length > 0) {
+                    throw new ValidationError(
+                        `Unknown email placeholder${unknownPlaceholders.length === 1 ? "" : "s"}: `
+                        + unknownPlaceholders.map(name => `{{${name}}}`).join(", ")
+                    );
+                }
+
+                if (!env.RESEND_API_KEY?.trim()) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Email service is not configured."
+                    }, 503);
+                }
+
+                const requestFingerprint = await sha256Base64Url(JSON.stringify({
+                    registration_ids: [...registrationIds].sort((left, right) => left - right),
+                    subject: subjectTemplate,
+                    message: messageTemplate
+                }));
+
+                const previousSend = await env.gitanushilanam_db.prepare(`
+                    SELECT new_values
+                    FROM admin_audit_log
+                    WHERE action = 'participant_email_sent'
+                      AND entity_type = 'email_batch'
+                      AND entity_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                `).bind(requestId).first<{ new_values: string | null }>();
+
+                if (previousSend) {
+                    let previousDetails: Record<string, unknown> = {};
+
+                    try {
+                        previousDetails = previousSend.new_values
+                            ? JSON.parse(previousSend.new_values) as Record<string, unknown>
+                            : {};
+                    } catch {
+                        previousDetails = {};
+                    }
+
+                    if (previousDetails.request_fingerprint !== requestFingerprint) {
+                        return jsonResponse(request, {
+                            success: false,
+                            message: "This email request ID was already used for different content."
+                        }, 409);
+                    }
+
+                    return jsonResponse(request, {
+                        success: true,
+                        already_sent: true,
+                        sent_count: Number(previousDetails.recipient_count) || registrationIds.length,
+                        request_id: requestId
+                    });
+                }
+
+                const placeholders = registrationIds.map(() => "?").join(", ");
+                const rows = await env.gitanushilanam_db.prepare(`
+                    SELECT
+                        r.id,
+                        r.name,
+                        r.email,
+                        r.phone,
+                        r.whatsapp,
+                        r.age,
+                        r.participant_group,
+                        r.institution_organization,
+                        r.country,
+                        r.state,
+                        r.city,
+                        r.bhagavad_gita_quiz,
+                        r.shloka_recitation,
+                        r.animated_bg_video,
+                        r.treasure_hunt,
+                        links.bhagavad_gita_quiz AS bhagavad_gita_quiz_link,
+                        links.shloka_recitation AS shloka_recitation_link,
+                        links.animated_bg_video AS animated_bg_video_link,
+                        links.treasure_hunt AS treasure_hunt_link
+                    FROM registrations AS r
+                    LEFT JOIN whatsapp_group_links AS links
+                      ON links.participant_group = r.participant_group
+                    WHERE r.id IN (${placeholders})
+                    ORDER BY r.id
+                `).bind(...registrationIds).all<AdminEmailParticipant>();
+
+                const participants = rows.results;
+                const foundIds = new Set(participants.map(participant => Number(participant.id)));
+                const missingIds = registrationIds.filter(id => !foundIds.has(id));
+
+                if (missingIds.length > 0) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "One or more selected registrations no longer exist.",
+                        missing_registration_ids: missingIds
+                    }, 400);
+                }
+
+                const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
+                const invalidEmailIds = participants
+                    .filter(participant => !emailPattern.test(participant.email))
+                    .map(participant => participant.id);
+
+                if (invalidEmailIds.length > 0) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "One or more selected registrations have invalid email addresses.",
+                        invalid_registration_ids: invalidEmailIds
+                    }, 400);
+                }
+
+                const emails = participants.map(participant =>
+                    buildResendBatchEmail(participant, subjectTemplate, messageTemplate)
+                );
+
+                const oversizedSubject = emails.find(email => Array.from(email.subject).length > 200);
+
+                if (oversizedSubject) {
+                    throw new ValidationError(
+                        "The personalized email subject exceeds 200 characters."
+                    );
+                }
+
+                const emailIds = await sendResendBatch(
+                    env.RESEND_API_KEY,
+                    requestId,
+                    emails
+                );
+
+                await env.gitanushilanam_db.prepare(`
+                    INSERT INTO admin_audit_log (
+                        admin_id,
+                        admin_email,
+                        admin_role,
+                        action,
+                        entity_type,
+                        entity_id,
+                        old_values,
+                        new_values,
+                        ip_address,
+                        user_agent
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `).bind(
+                    session.admin_id,
+                    session.email,
+                    session.role,
+                    "participant_email_sent",
+                    "email_batch",
+                    requestId,
+                    null,
+                    JSON.stringify({
+                        request_fingerprint: requestFingerprint,
+                        recipient_count: participants.length,
+                        registration_ids: participants.map(participant => participant.id),
+                        subject: subjectTemplate,
+                        resend_email_ids: emailIds
+                    }),
+                    getClientIp(request),
+                    getUserAgent(request)
+                ).run();
+
+                return jsonResponse(request, {
+                    success: true,
+                    already_sent: false,
+                    sent_count: participants.length,
+                    request_id: requestId
+                });
+            } catch (error) {
+                if (error instanceof ValidationError) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: error.message
+                    }, 400);
+                }
+
+                if (error instanceof ResendApiError) {
+                    console.error("Resend email error:", error.message, error.status);
+
+                    return jsonResponse(request, {
+                        success: false,
+                        message: error.status === 429
+                            ? "Email sending limit reached. Please try again later."
+                            : `Email service error: ${error.message}`
+                    }, error.status === 429 ? 429 : 502);
+                }
+
+                console.error("Admin email error:", error);
+
+                return jsonResponse(request, {
+                    success: false,
+                    message: "Unable to send participant emails."
+                }, 500);
+            }
         }
 
         const registrationUpdateMatch = url.pathname.match(
