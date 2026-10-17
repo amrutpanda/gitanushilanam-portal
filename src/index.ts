@@ -144,7 +144,7 @@ function getCorsHeaders(request: Request): Record<string, string> {
     const origin = request.headers.get("Origin");
 
     const headers: Record<string, string> = {
-        "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
         "Vary": "Origin",
         "Cache-Control": "no-store",
@@ -1538,6 +1538,183 @@ export default {
         const registrationUpdateMatch = url.pathname.match(
             /^\/admin\/api\/registrations\/(\d+)$/u
         );
+
+        if (registrationUpdateMatch && request.method === "DELETE") {
+            if (!isAllowedOrigin(request)) {
+                return jsonResponse(request, {
+                    success: false,
+                    message: "Request origin is not allowed."
+                }, 403);
+            }
+
+            const session = await requireSuperAdminSession(request, env);
+
+            if (session instanceof Response) {
+                return session;
+            }
+
+            const registrationId = parseRegistrationId(registrationUpdateMatch[1]);
+
+            if (!registrationId) {
+                return jsonResponse(request, {
+                    success: false,
+                    message: "Invalid registration ID."
+                }, 400);
+            }
+
+            try {
+                let body: unknown;
+
+                try {
+                    body = await request.json();
+                } catch {
+                    throw new ValidationError("Please send valid JSON.");
+                }
+
+                if (typeof body !== "object" || body === null || Array.isArray(body)) {
+                    throw new ValidationError("Deletion confirmation must be a JSON object.");
+                }
+
+                const confirmationEmail = readRequiredText(
+                    (body as Record<string, unknown>).confirmation_email,
+                    "Confirmation email",
+                    254
+                ).toLowerCase();
+
+                const existing = await env.gitanushilanam_db.prepare(`
+                    SELECT
+                        id,
+                        name,
+                        email,
+                        phone,
+                        whatsapp,
+                        age,
+                        participant_group,
+                        gender,
+                        institution_organization,
+                        country,
+                        state,
+                        city,
+                        heard_from,
+                        bhagavad_gita_quiz,
+                        shloka_recitation,
+                        animated_bg_video,
+                        treasure_hunt,
+                        created_at
+                    FROM registrations
+                    WHERE id = ?
+                    LIMIT 1
+                `).bind(registrationId).first<Record<string, unknown>>();
+
+                if (!existing) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Registration not found."
+                    }, 404);
+                }
+
+                const storedEmail = String(existing.email ?? "").trim().toLowerCase();
+
+                if (confirmationEmail !== storedEmail) {
+                    throw new ValidationError(
+                        "The confirmation email does not match this participant."
+                    );
+                }
+
+                const oldSnapshot = {
+                    name: existing.name,
+                    email: existing.email,
+                    phone: existing.phone,
+                    whatsapp: existing.whatsapp,
+                    age: existing.age,
+                    participant_group: existing.participant_group,
+                    gender: existing.gender,
+                    institution_organization: existing.institution_organization,
+                    country: existing.country,
+                    state: existing.state,
+                    city: existing.city,
+                    heard_from: existing.heard_from,
+                    bhagavad_gita_quiz: existing.bhagavad_gita_quiz,
+                    shloka_recitation: existing.shloka_recitation,
+                    animated_bg_video: existing.animated_bg_video,
+                    treasure_hunt: existing.treasure_hunt,
+                    created_at: existing.created_at
+                };
+
+                const auditStatement = env.gitanushilanam_db.prepare(`
+                    INSERT INTO admin_audit_log (
+                        admin_id,
+                        admin_email,
+                        admin_role,
+                        action,
+                        entity_type,
+                        entity_id,
+                        old_values,
+                        new_values,
+                        ip_address,
+                        user_agent
+                    )
+                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM registrations
+                        WHERE id = ?
+                    )
+                `).bind(
+                    session.admin_id,
+                    session.email,
+                    session.role,
+                    "registration_delete",
+                    "registration",
+                    String(registrationId),
+                    JSON.stringify(oldSnapshot),
+                    JSON.stringify({ deleted: true }),
+                    getClientIp(request),
+                    getUserAgent(request),
+                    registrationId
+                );
+
+                const deleteStatement = env.gitanushilanam_db.prepare(`
+                    DELETE FROM registrations
+                    WHERE id = ?
+                `).bind(registrationId);
+
+                const batchResults = await env.gitanushilanam_db.batch([
+                    auditStatement,
+                    deleteStatement
+                ]);
+
+                if (Number(batchResults[1]?.meta?.changes) !== 1) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Registration was already deleted."
+                    }, 404);
+                }
+
+                return jsonResponse(request, {
+                    success: true,
+                    deleted_registration: {
+                        id: registrationId,
+                        name: existing.name,
+                        email: existing.email
+                    }
+                });
+            } catch (error) {
+                if (error instanceof ValidationError) {
+                    return jsonResponse(request, {
+                        success: false,
+                        message: error.message
+                    }, 400);
+                }
+
+                console.error("Super Admin registration deletion error:", error);
+
+                return jsonResponse(request, {
+                    success: false,
+                    message: "Unable to delete the registration."
+                }, 500);
+            }
+        }
 
         if (registrationUpdateMatch && request.method === "PATCH") {
             if (!isAllowedOrigin(request)) {
