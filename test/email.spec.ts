@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+    ADMIN_EMAIL_LOGO_URL,
     type AdminEmailParticipant,
     buildResendBatchEmail,
     findUnknownPlaceholders,
@@ -59,6 +60,8 @@ describe("admin email templates", () => {
         expect(html).toContain("Ananya &lt;Test&gt;");
         expect(html).not.toContain("Ananya <Test>");
         expect(html).toContain('href="https://chat.whatsapp.com/quiz"');
+        expect(html).toContain(`src="${ADMIN_EMAIL_LOGO_URL}"`);
+        expect(html).toContain("Learn the Gita Live its Wisdom");
     });
 
     it("builds one private message addressed to the participant", () => {

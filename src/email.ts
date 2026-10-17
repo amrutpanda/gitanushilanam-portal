@@ -3,6 +3,8 @@ const RESEND_BATCH_URL = "https://api.resend.com/emails/batch";
 export const ADMIN_EMAIL_MAX_RECIPIENTS = 100;
 export const ADMIN_EMAIL_SENDER = "Gitanushilanam <support@gitanushilanam.net>";
 export const ADMIN_EMAIL_REPLY_TO = "support@gitanushilanam.net";
+export const ADMIN_EMAIL_LOGO_URL =
+    "https://manideepdonkena.github.io/gitanushilanam_html/assets/gitanushilanam_assets/img/lglglogo.png";
 
 const participantGroupLabels: Record<string, string> = {
     sub_junior: "Sub-Junior (Class 3–5)",
@@ -200,9 +202,17 @@ export function renderAdminEmailHtml(renderedMessage: string): string {
 </head>
 <body style="margin:0;padding:24px;background:#f5f7fb;color:#1f2937;font-family:Arial,sans-serif;">
   <div style="max-width:640px;margin:0 auto;border:1px solid #e5e7eb;border-radius:14px;background:#ffffff;overflow:hidden;">
-    <div style="padding:20px 24px;background:#fff7ed;border-bottom:1px solid #fed7aa;">
-      <strong style="font-size:18px;color:#9a3412;">Gitanushilanam 2026</strong>
-    </div>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#fff7ed;border-bottom:1px solid #fed7aa;">
+      <tr>
+        <td width="88" style="padding:16px 0 16px 24px;vertical-align:middle;">
+          <img src="${ADMIN_EMAIL_LOGO_URL}" width="64" height="64" alt="Gitanushilanam" style="display:block;width:64px;height:64px;object-fit:contain;border:0;">
+        </td>
+        <td style="padding:16px 24px 16px 12px;vertical-align:middle;">
+          <div style="font-size:19px;font-weight:700;line-height:1.3;color:#9a3412;">Gitanushilanam 2026</div>
+          <div style="margin-top:4px;font-size:13px;line-height:1.4;color:#7c2d12;">Learn the Gita Live its Wisdom</div>
+        </td>
+      </tr>
+    </table>
     <div style="padding:26px 24px;font-size:15px;line-height:1.7;">
       ${textToSafeHtml(renderedMessage)}
     </div>
