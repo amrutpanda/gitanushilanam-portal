@@ -168,3 +168,6 @@ dist
 
 # Local secret backups
 resendKey
+
+# Local database exports contain participant and admin data
+.backups/
