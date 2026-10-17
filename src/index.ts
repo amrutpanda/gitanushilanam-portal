@@ -1390,12 +1390,37 @@ export default {
                         r.animated_bg_video,
                         r.treasure_hunt,
                         links.bhagavad_gita_quiz AS bhagavad_gita_quiz_link,
-                        links.shloka_recitation AS shloka_recitation_link,
-                        links.animated_bg_video AS animated_bg_video_link,
-                        links.treasure_hunt AS treasure_hunt_link
+                        COALESCE(
+                            links.shloka_recitation,
+                            shared_links.shloka_recitation
+                        ) AS shloka_recitation_link,
+                        COALESCE(
+                            links.animated_bg_video,
+                            shared_links.animated_bg_video
+                        ) AS animated_bg_video_link,
+                        COALESCE(
+                            links.treasure_hunt,
+                            shared_links.treasure_hunt
+                        ) AS treasure_hunt_link
                     FROM registrations AS r
                     LEFT JOIN whatsapp_group_links AS links
                       ON links.participant_group = r.participant_group
+                    LEFT JOIN (
+                        SELECT
+                            CASE
+                                WHEN COUNT(DISTINCT shloka_recitation) = 1
+                                THEN MAX(shloka_recitation)
+                            END AS shloka_recitation,
+                            CASE
+                                WHEN COUNT(DISTINCT animated_bg_video) = 1
+                                THEN MAX(animated_bg_video)
+                            END AS animated_bg_video,
+                            CASE
+                                WHEN COUNT(DISTINCT treasure_hunt) = 1
+                                THEN MAX(treasure_hunt)
+                            END AS treasure_hunt
+                        FROM whatsapp_group_links
+                    ) AS shared_links ON 1 = 1
                     WHERE r.id IN (${placeholders})
                     ORDER BY r.id
                 `).bind(...registrationIds).all<AdminEmailParticipant>();
