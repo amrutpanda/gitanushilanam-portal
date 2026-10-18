@@ -2308,7 +2308,7 @@ export default {
                     try {
                         await sendResendBatch(
                             env.RESEND_API_KEY,
-                            `registration-confirmation-${registrationId}`,
+                            `registration-confirmation-${registrationId}-${crypto.randomUUID()}`,
                             [buildRegistrationConfirmationEmail(participant)]
                         );
                         emailSent = true;

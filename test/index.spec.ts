@@ -154,9 +154,36 @@ describe("Registration API", () => {
         expect(resendCall).toBeDefined();
         const resendRequest = resendCall?.[1];
         expect(new Headers(resendRequest?.headers).get("Idempotency-Key"))
-            .toMatch(/^registration-confirmation-\d+$/u);
+            .toMatch(/^registration-confirmation-\d+-[0-9a-f-]{36}$/u);
         expect(String(resendRequest?.body)).toContain("Registration confirmed");
         expect(String(resendRequest?.body)).toContain("youth_adultQuiz");
+    });
+
+    it("sends a new confirmation after a participant is deleted and registers again", async () => {
+        expect((await submit(validRegistration)).status).toBe(200);
+        const firstRegistrationId = await db.prepare(
+            "SELECT id FROM registrations WHERE email = ?"
+        ).bind("amrut@example.com").first<number>("id");
+
+        await db.prepare("DELETE FROM registrations WHERE id = ?")
+            .bind(firstRegistrationId).run();
+
+        expect((await submit(validRegistration)).status).toBe(200);
+        const secondRegistrationId = await db.prepare(
+            "SELECT id FROM registrations WHERE email = ?"
+        ).bind("amrut@example.com").first<number>("id");
+
+        expect(secondRegistrationId).toBe(firstRegistrationId);
+
+        const idempotencyKeys = vi.mocked(fetch).mock.calls
+            .filter(([input]) =>
+                (typeof input === "string" ? input : input.url)
+                    === "https://api.resend.com/emails/batch"
+            )
+            .map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+
+        expect(idempotencyKeys).toHaveLength(2);
+        expect(new Set(idempotencyKeys).size).toBe(2);
     });
 
     it("keeps a successful registration when confirmation email delivery fails", async () => {
