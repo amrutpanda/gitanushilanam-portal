@@ -83,6 +83,12 @@ export interface ResendBatchEmail {
     tags: Array<{ name: string; value: string }>;
 }
 
+export interface ParticipantCompetitionLink {
+    key: string;
+    label: string;
+    url: string | null;
+}
+
 export class ResendApiError extends Error {
     readonly status: number;
 
@@ -97,19 +103,28 @@ function getSelectedCompetitions(participant: AdminEmailParticipant) {
     return competitionDefinitions.filter(definition => Number(participant[definition.flag]) === 1);
 }
 
+export function getParticipantCompetitionLinks(
+    participant: AdminEmailParticipant
+): ParticipantCompetitionLink[] {
+    return getSelectedCompetitions(participant).map(competition => ({
+        key: competition.flag,
+        label: competition.label,
+        url: participant[competition.link]?.trim() || null
+    }));
+}
+
 function getTemplateValues(
     participant: AdminEmailParticipant
 ): Record<AdminEmailPlaceholder, string> {
-    const competitions = getSelectedCompetitions(participant);
+    const competitions = getParticipantCompetitionLinks(participant);
     const competitionList = competitions.length > 0
         ? competitions.map(competition => `• ${competition.label}`).join("\n")
         : "No competition selected";
 
     const whatsappLinks = competitions.length > 0
         ? competitions.map(competition => {
-            const link = participant[competition.link];
-            return link
-                ? `• ${competition.label}: ${link}`
+            return competition.url
+                ? `• ${competition.label}: ${competition.url}`
                 : `• ${competition.label}: Link will be communicated soon`;
         }).join("\n")
         : "No WhatsApp group link available";
@@ -248,6 +263,40 @@ export function buildResendBatchEmail(
     };
 }
 
+export function buildRegistrationConfirmationEmail(
+    participant: AdminEmailParticipant
+): ResendBatchEmail {
+    const email = buildResendBatchEmail(
+        participant,
+        "Registration confirmed — Gitanushilanam 2026",
+        `Hare Krishna {{name}},
+
+Your registration for Gitanushilanam 2026 has been completed successfully.
+
+Participant group:
+{{participant_group}}
+
+Selected competitions:
+{{competitions}}
+
+Please join your WhatsApp groups using the links below:
+{{whatsapp_links}}
+
+All notifications, schedules, instructions and further competition updates will be communicated through these WhatsApp groups.
+
+With regards,
+Gitanushilanam Team`
+    );
+
+    return {
+        ...email,
+        tags: [
+            { name: "source", value: "registration" },
+            { name: "registration_id", value: String(participant.id) }
+        ]
+    };
+}
+
 function getResendErrorMessage(data: unknown): string {
     if (typeof data !== "object" || data === null || Array.isArray(data)) {
         return "Resend rejected the email request.";
@@ -261,7 +310,7 @@ function getResendErrorMessage(data: unknown): string {
 
 export async function sendResendBatch(
     apiKey: string,
-    requestId: string,
+    idempotencyKey: string,
     emails: ResendBatchEmail[],
     fetcher: typeof fetch = fetch
 ): Promise<string[]> {
@@ -273,7 +322,7 @@ export async function sendResendBatch(
             headers: {
                 "Authorization": `Bearer ${apiKey}`,
                 "Content-Type": "application/json",
-                "Idempotency-Key": `admin-email-${requestId}`
+                "Idempotency-Key": idempotencyKey
             },
             body: JSON.stringify(emails)
         });

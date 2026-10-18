@@ -3,62 +3,202 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import initialSchema from "../migrations/0001_create_registrations_table.sql?raw";
 import uniqueRegistration from "../migrations/0002_unique_registration.sql?raw";
+import participantDetails from "../migrations/0003_add_gender_and_institution.sql?raw";
+import uniqueContacts from "../migrations/0004_make_email_phone_unique.sql?raw";
+import participantGroup from "../migrations/0007_add_participant_group.sql?raw";
+import whatsappLinks from "../migrations/0009_whatsapp_invite_links.sql?raw";
 
 const db = env.gitanushilanam_db;
+const testEnv = {
+    gitanushilanam_db: db,
+    TURNSTILE_SECRET_KEY: "turnstile-secret",
+    RESEND_API_KEY: "resend-secret",
+    REGISTRATION_DEADLINE: "2099-11-01T23:59:59+05:30"
+};
 const validRegistration = {
     name: "  अमृत O’Connor  ",
     email: "  AMRUT@example.com  ",
     phone: "+91 98765 43210",
     whatsapp: "+91 98765 43210",
     age: 20,
+    gender: "other",
+    institution_organization: "Gita Institute",
     country: "India",
     state: "Maharashtra",
     city: "Pune",
     heard_from: "Friend",
-    competitions: ["bhagavad_gita_quiz", "treasure_hunt"]
+    participant_group: "youth_adult",
+    competitions: ["bhagavad_gita_quiz", "treasure_hunt"],
+    turnstile_token: "valid-turnstile-token"
 };
 
-function submit(data: unknown) {
-    return SELF.fetch("https://example.com/api/register", {
+async function applyMigration(sql: string) {
+    const executableSql = sql.replace(/--.*$/gmu, "");
+
+    for (const statement of executableSql.split(";")) {
+        if (statement.trim()) {
+            await db.prepare(statement).run();
+        }
+    }
+}
+
+function submit(data: unknown, overrides: Partial<typeof testEnv> = {}) {
+    return worker.fetch(new Request("https://example.com/api/register", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+            "Content-Type": "application/json",
+            "Origin": "https://gitanushilanam.net"
+        },
         body: JSON.stringify(data)
-    });
+    }), { ...testEnv, ...overrides });
 }
 
 beforeAll(async () => {
-    // Execute the actual migrations against the isolated test database.
-    for (const migration of [initialSchema, uniqueRegistration]) {
-        for (const sql of migration.split(";")) {
-            if (sql.trim()) {
-                await db.prepare(sql).run();
-            }
-        }
+    for (const migration of [
+        initialSchema,
+        uniqueRegistration,
+        participantDetails,
+        uniqueContacts,
+        participantGroup,
+        whatsappLinks
+    ]) {
+        await applyMigration(migration);
+    }
+
+    for (const group of ["sub_junior", "junior", "senior", "youth_adult"]) {
+        await db.prepare(`
+            INSERT INTO whatsapp_group_links (
+                participant_group,
+                bhagavad_gita_quiz,
+                shloka_recitation,
+                animated_bg_video,
+                treasure_hunt
+            ) VALUES (?, ?, ?, ?, ?)
+        `).bind(
+            group,
+            `https://chat.whatsapp.com/${group}Quiz`,
+            "https://chat.whatsapp.com/ShlokaGroup",
+            "https://chat.whatsapp.com/VideoGroup",
+            "https://chat.whatsapp.com/TreasureGroup"
+        ).run();
     }
 });
 
 beforeEach(async () => {
+    vi.restoreAllMocks();
     await db.prepare("DELETE FROM registrations").run();
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+        const url = typeof input === "string" ? input : input.url;
+
+        if (url === "https://challenges.cloudflare.com/turnstile/v0/siteverify") {
+            return Response.json({
+                success: true,
+                hostname: "gitanushilanam.net",
+                action: "registration"
+            });
+        }
+
+        if (url === "https://api.resend.com/emails/batch") {
+            return Response.json({ data: [{ id: "email-1" }] });
+        }
+
+        throw new Error(`Unexpected outbound request: ${url}`);
+    });
 });
 
 describe("Registration API", () => {
-    it("saves normalized contact details and selected competitions", async () => {
+    it("saves normalized details and returns selected group links after emailing", async () => {
         const response = await submit(validRegistration);
         expect(response.status).toBe(200);
-        const result = await response.json<{ id: number; success: boolean }>();
-        expect(result.success).toBe(true);
-        const row = await db.prepare("SELECT * FROM registrations WHERE id = ?")
-            .bind(result.id).first();
+        const result = await response.json<{
+            success: boolean;
+            email_sent: boolean;
+            whatsapp_groups: Array<{ key: string; label: string; url: string }>;
+        }>();
+
+        expect(result).toMatchObject({
+            success: true,
+            email_sent: true,
+            whatsapp_groups: [
+                {
+                    key: "bhagavad_gita_quiz",
+                    label: "Bhagavad Gita Quiz",
+                    url: "https://chat.whatsapp.com/youth_adultQuiz"
+                },
+                {
+                    key: "treasure_hunt",
+                    label: "Treasure Hunt",
+                    url: "https://chat.whatsapp.com/TreasureGroup"
+                }
+            ]
+        });
+
+        const row = await db.prepare("SELECT * FROM registrations WHERE email = ?")
+            .bind("amrut@example.com").first();
         expect(row).toMatchObject({
             name: "अमृत O’Connor",
             email: "amrut@example.com",
             phone: "+919876543210",
             whatsapp: "+919876543210",
+            participant_group: "youth_adult",
             bhagavad_gita_quiz: 1,
             shloka_recitation: 0,
             animated_bg_video: 0,
             treasure_hunt: 1
         });
+
+        const resendCall = vi.mocked(fetch).mock.calls.find(([input]) =>
+            (typeof input === "string" ? input : input.url) === "https://api.resend.com/emails/batch"
+        );
+        expect(resendCall).toBeDefined();
+        const resendRequest = resendCall?.[1];
+        expect(new Headers(resendRequest?.headers).get("Idempotency-Key"))
+            .toMatch(/^registration-confirmation-\d+$/u);
+        expect(String(resendRequest?.body)).toContain("Registration confirmed");
+        expect(String(resendRequest?.body)).toContain("youth_adultQuiz");
+    });
+
+    it("keeps a successful registration when confirmation email delivery fails", async () => {
+        vi.mocked(fetch).mockImplementation(async input => {
+            const url = typeof input === "string" ? input : input.url;
+
+            if (url.includes("turnstile")) {
+                return Response.json({
+                    success: true,
+                    hostname: "gitanushilanam.net",
+                    action: "registration"
+                });
+            }
+
+            return Response.json({ message: "Temporary email failure" }, { status: 503 });
+        });
+        const log = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        const response = await submit(validRegistration);
+        const result = await response.json<{ success: boolean; email_sent: boolean }>();
+
+        expect(response.status).toBe(200);
+        expect(result).toMatchObject({ success: true, email_sent: false });
+        expect(await db.prepare("SELECT COUNT(*) FROM registrations").first<number>("COUNT(*)"))
+            .toBe(1);
+        log.mockRestore();
+    });
+
+    it("closes registration after the configured deadline without exposing the date", async () => {
+        const response = await submit(validRegistration, {
+            REGISTRATION_DEADLINE: "2000-11-01T23:59:59+05:30"
+        });
+
+        expect(response.status).toBe(410);
+        expect(await response.json()).toEqual({
+            success: false,
+            code: "registration_closed",
+            message: "No longer accepting registrations."
+        });
+        expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+        expect(await db.prepare("SELECT COUNT(*) FROM registrations").first<number>("COUNT(*)"))
+            .toBe(0);
     });
 
     it.each([
@@ -72,6 +212,8 @@ describe("Registration API", () => {
         ["embedded phone", { phone: "+91 98765 43210 call me" }],
         ["phone extension", { phone: "+919876543210 ext. 123" }],
         ["invalid WhatsApp", { whatsapp: "+91123" }],
+        ["wrong gender", { gender: "unknown" }],
+        ["wrong participant group", { participant_group: "unknown" }],
         ["wrong country type", { country: {} }],
         ["missing city", { city: undefined }],
         ["long source", { heard_from: "x".repeat(201) }],
@@ -91,15 +233,15 @@ describe("Registration API", () => {
             .toBe(0);
     });
 
-    it.each([null, [], "text", 42])("rejects a non-object JSON body: %j", async (body) => {
+    it.each([null, [], "text", 42])("rejects a non-object JSON body: %j", async body => {
         expect((await submit(body)).status).toBe(400);
     });
 
     it("returns 400 for malformed JSON", async () => {
-        const response = await SELF.fetch("https://example.com/api/register", {
+        const response = await worker.fetch(new Request("https://example.com/api/register", {
             method: "POST",
             body: "{broken"
-        });
+        }), testEnv);
         expect(response.status).toBe(400);
         expect(await response.json()).toMatchObject({ message: "Please send valid JSON." });
     });
@@ -114,9 +256,10 @@ describe("Registration API", () => {
             .toBe(1);
     });
 
-    it("allows the same phone with a different email", async () => {
+    it("rejects the same phone with a different email", async () => {
         expect((await submit(validRegistration)).status).toBe(200);
-        expect((await submit({ ...validRegistration, email: "second@example.com" })).status).toBe(200);
+        expect((await submit({ ...validRegistration, email: "second@example.com" })).status)
+            .toBe(409);
     });
 
     it("returns 500 for an unrelated database failure", async () => {
@@ -128,18 +271,25 @@ describe("Registration API", () => {
             const response = await worker.fetch(new Request("https://example.com/api/register", {
                 method: "POST",
                 body: JSON.stringify(validRegistration)
-            }), { gitanushilanam_db: brokenDatabase });
+            }), { ...testEnv, gitanushilanam_db: brokenDatabase });
             expect(response.status).toBe(500);
-            expect(await response.json()).toMatchObject({ message: "Unable to process the registration." });
+            expect(await response.json()).toMatchObject({
+                message: "Unable to process the registration."
+            });
         } finally {
             log.mockRestore();
         }
     });
 
-    it("handles CORS preflight", async () => {
-        const response = await SELF.fetch("https://example.com/api/register", { method: "OPTIONS" });
+    it("handles CORS preflight for the registration site", async () => {
+        const response = await SELF.fetch("https://example.com/api/register", {
+            method: "OPTIONS",
+            headers: { "Origin": "https://gitanushilanam.net" }
+        });
         expect(response.status).toBe(204);
-        expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+        expect(response.headers.get("Access-Control-Allow-Origin"))
+            .toBe("https://gitanushilanam.net");
+        expect(response.headers.get("Access-Control-Allow-Methods")).toContain("POST");
     });
 
     it("serves the health check and returns 404 for unknown routes", async () => {

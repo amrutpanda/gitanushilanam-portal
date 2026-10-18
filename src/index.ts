@@ -2,8 +2,10 @@ import { parsePhoneNumberFromString } from "libphonenumber-js/max";
 import {
     ADMIN_EMAIL_MAX_RECIPIENTS,
     type AdminEmailParticipant,
+    buildRegistrationConfirmationEmail,
     buildResendBatchEmail,
     findUnknownPlaceholders,
+    getParticipantCompetitionLinks,
     ResendApiError,
     sendResendBatch
 } from "./email";
@@ -14,6 +16,7 @@ interface Env {
     gitanushilanam_db: D1Database;
     TURNSTILE_SECRET_KEY: string;
     RESEND_API_KEY: string;
+    REGISTRATION_DEADLINE: string;
 }
 
 interface TurnstileResult {
@@ -1464,7 +1467,7 @@ export default {
 
                 const emailIds = await sendResendBatch(
                     env.RESEND_API_KEY,
-                    requestId,
+                    `admin-email-${requestId}`,
                     emails
                 );
 
@@ -2031,6 +2034,25 @@ export default {
 
         if (url.pathname === "/api/register" && request.method === "POST") {
             try {
+                const registrationDeadline = Date.parse(env.REGISTRATION_DEADLINE);
+
+                if (!Number.isFinite(registrationDeadline)) {
+                    console.error("REGISTRATION_DEADLINE is missing or invalid.");
+
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Registration is temporarily unavailable."
+                    }, 503);
+                }
+
+                if (Date.now() > registrationDeadline) {
+                    return jsonResponse(request, {
+                        success: false,
+                        code: "registration_closed",
+                        message: "No longer accepting registrations."
+                    }, 410);
+                }
+
                 let body: unknown;
 
                 try {
@@ -2182,6 +2204,31 @@ export default {
                 const animatedBgVideo = competitions.includes("animated_bg_video") ? 1 : 0;
                 const treasureHunt = competitions.includes("treasure_hunt") ? 1 : 0;
 
+                const groupLinks = await env.gitanushilanam_db.prepare(`
+                    SELECT
+                        bhagavad_gita_quiz,
+                        shloka_recitation,
+                        animated_bg_video,
+                        treasure_hunt
+                    FROM whatsapp_group_links
+                    WHERE participant_group = ?
+                    LIMIT 1
+                `).bind(participantGroup).first<{
+                    bhagavad_gita_quiz: string;
+                    shloka_recitation: string;
+                    animated_bg_video: string;
+                    treasure_hunt: string;
+                }>();
+
+                if (!groupLinks) {
+                    console.error("WhatsApp group links are missing for:", participantGroup);
+
+                    return jsonResponse(request, {
+                        success: false,
+                        message: "Registration is temporarily unavailable. Please try again later."
+                    }, 503);
+                }
+
                 /* INSERT REGISTRATION */
 
                 const result = await env.gitanushilanam_db.prepare(`
@@ -2232,11 +2279,53 @@ export default {
                     }, 409);
                 }
 
+                const registrationId = Number(result.meta.last_row_id);
+                const participant: AdminEmailParticipant = {
+                    id: registrationId,
+                    name,
+                    email,
+                    phone,
+                    whatsapp,
+                    age,
+                    participant_group: participantGroup,
+                    institution_organization: institutionOrganization,
+                    country,
+                    state,
+                    city,
+                    bhagavad_gita_quiz: bhagavadGitaQuiz,
+                    shloka_recitation: shlokaRecitation,
+                    animated_bg_video: animatedBgVideo,
+                    treasure_hunt: treasureHunt,
+                    bhagavad_gita_quiz_link: groupLinks.bhagavad_gita_quiz,
+                    shloka_recitation_link: groupLinks.shloka_recitation,
+                    animated_bg_video_link: groupLinks.animated_bg_video,
+                    treasure_hunt_link: groupLinks.treasure_hunt
+                };
+                const whatsappGroups = getParticipantCompetitionLinks(participant);
+                let emailSent = false;
+
+                if (env.RESEND_API_KEY?.trim()) {
+                    try {
+                        await sendResendBatch(
+                            env.RESEND_API_KEY,
+                            `registration-confirmation-${registrationId}`,
+                            [buildRegistrationConfirmationEmail(participant)]
+                        );
+                        emailSent = true;
+                    } catch (emailError) {
+                        console.error("Registration confirmation email error:", emailError);
+                    }
+                } else {
+                    console.error("RESEND_API_KEY is not configured for registration email.");
+                }
+
                 /* SUCCESS */
 
                 return jsonResponse(request, {
                     success: true,
-                    message: "Registration successful."
+                    message: "Registration successful.",
+                    email_sent: emailSent,
+                    whatsapp_groups: whatsappGroups
                 });
             } catch (error) {
                 if (error instanceof ValidationError) {

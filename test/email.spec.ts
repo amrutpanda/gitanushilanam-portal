@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
     ADMIN_EMAIL_LOGO_URL,
     type AdminEmailParticipant,
+    buildRegistrationConfirmationEmail,
     buildResendBatchEmail,
     findUnknownPlaceholders,
     renderAdminEmailHtml,
@@ -76,6 +77,17 @@ describe("admin email templates", () => {
         expect(email.text).toBe("Hare Krishna Ananya <Test>");
         expect(email.tags).toContainEqual({ name: "registration_id", value: "42" });
     });
+
+    it("builds a branded registration confirmation with the selected group links", () => {
+        const email = buildRegistrationConfirmationEmail(participant);
+
+        expect(email.subject).toBe("Registration confirmed — Gitanushilanam 2026");
+        expect(email.text).toContain("completed successfully");
+        expect(email.text).toContain("https://chat.whatsapp.com/quiz");
+        expect(email.text).toContain("https://chat.whatsapp.com/shloka");
+        expect(email.text).not.toContain("https://chat.whatsapp.com/video");
+        expect(email.tags).toContainEqual({ name: "source", value: "registration" });
+    });
 });
 
 describe("Resend batch transport", () => {
@@ -85,7 +97,12 @@ describe("Resend batch transport", () => {
         }));
         const email = buildResendBatchEmail(participant, "Subject", "Message");
 
-        await expect(sendResendBatch("secret", "request_12345678", [email], fetcher))
+        await expect(sendResendBatch(
+            "secret",
+            "admin-email-request_12345678",
+            [email],
+            fetcher
+        ))
             .resolves.toEqual(["email-1"]);
 
         expect(fetcher).toHaveBeenCalledOnce();
@@ -104,7 +121,12 @@ describe("Resend batch transport", () => {
         ));
         const email = buildResendBatchEmail(participant, "Subject", "Message");
 
-        await expect(sendResendBatch("secret", "request_12345678", [email], fetcher))
+        await expect(sendResendBatch(
+            "secret",
+            "admin-email-request_12345678",
+            [email],
+            fetcher
+        ))
             .rejects.toEqual(expect.objectContaining<Partial<ResendApiError>>({
                 status: 429,
                 message: "Rate limit exceeded"
