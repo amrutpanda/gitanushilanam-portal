@@ -945,6 +945,14 @@ export default {
                 complete: number;
             }>();
 
+            const stateRows = await env.gitanushilanam_db.prepare(`
+                SELECT COALESCE(NULLIF(TRIM(state), ''), 'Not specified') AS state,
+                    COUNT(*) AS count
+                FROM registrations
+                GROUP BY COALESCE(NULLIF(TRIM(state), ''), 'Not specified') COLLATE NOCASE
+                ORDER BY count DESC, state COLLATE NOCASE
+            `).all<{ state: string; count: number }>();
+
             const dailyRows = await env.gitanushilanam_db.prepare(`
                 SELECT
                     DATE(created_at) AS date,
@@ -1002,7 +1010,8 @@ export default {
                     missing_city: 0,
                     complete: 0
                 },
-                daily_registrations: dailyRegistrations
+                daily_registrations: dailyRegistrations,
+                participants_by_state: stateRows.results
             });
         }
 
