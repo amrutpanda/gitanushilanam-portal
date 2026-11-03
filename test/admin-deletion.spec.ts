@@ -191,13 +191,13 @@ describe("Super Admin registration deletion", () => {
 });
 
 describe("Admin state participant totals", () => {
-    it("counts each participant once, merges case and spacing, and includes missing states", async () => {
+    it("separates countries with the same state, normalizes spacing and case, and includes missing locations", async () => {
         await seed("admin");
-        for (const [index, state] of [" odisha ", "Karnataka", "   "].entries()) {
+        for (const [index, [country, state]] of [[" india ", " odisha "], ["India", "Karnataka"], ["India", "   "], ["Other country", "Odisha"], ["   ", "Odisha"]].entries()) {
             await db.prepare(`
                 INSERT INTO registrations (name, email, phone, whatsapp, age, country, state, city)
-                VALUES ('Test', ?, ?, ?, 18, 'India', ?, 'Test')
-            `).bind(`state${index}@example.com`, `phone${index}`, `phone${index}`, state).run();
+                VALUES ('Test', ?, ?, ?, 18, ?, ?, 'Test')
+            `).bind(`state${index}@example.com`, `phone${index}`, `phone${index}`, country, state).run();
         }
         const response = await SELF.fetch("https://example.com/admin/api/summary", {
             headers: { Authorization: `Bearer ${sessionToken}` }
@@ -205,12 +205,14 @@ describe("Admin state participant totals", () => {
         expect(response.status).toBe(200);
         const result = await response.json() as {
             summary: { total: number };
-            participants_by_state: Array<{ state: string; count: number }>;
+            participants_by_state: Array<{ country: string; state: string; count: number }>;
         };
-        expect(result.participants_by_state.map(row => ({ ...row, state: row.state.toLowerCase() }))).toEqual([
-            { state: "odisha", count: 2 },
-            { state: "karnataka", count: 1 },
-            { state: "not specified", count: 1 }
+        expect(result.participants_by_state.map(row => ({ ...row, country: row.country.toLowerCase(), state: row.state.toLowerCase() }))).toEqual([
+            { country: "country not specified", state: "odisha", count: 1 },
+            { country: "india", state: "odisha", count: 2 },
+            { country: "india", state: "karnataka", count: 1 },
+            { country: "india", state: "not specified", count: 1 },
+            { country: "other country", state: "odisha", count: 1 }
         ]);
         expect(result.participants_by_state.reduce((sum, row) => sum + row.count, 0)).toBe(result.summary.total);
         const unauthorized = await SELF.fetch("https://example.com/admin/api/summary");

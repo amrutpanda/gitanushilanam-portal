@@ -946,12 +946,14 @@ export default {
             }>();
 
             const stateRows = await env.gitanushilanam_db.prepare(`
-                SELECT COALESCE(NULLIF(TRIM(state), ''), 'Not specified') AS state,
+                SELECT COALESCE(NULLIF(TRIM(country), ''), 'Country not specified') AS country,
+                    COALESCE(NULLIF(TRIM(state), ''), 'Not specified') AS state,
                     COUNT(*) AS count
                 FROM registrations
-                GROUP BY COALESCE(NULLIF(TRIM(state), ''), 'Not specified') COLLATE NOCASE
-                ORDER BY count DESC, state COLLATE NOCASE
-            `).all<{ state: string; count: number }>();
+                GROUP BY COALESCE(NULLIF(TRIM(country), ''), 'Country not specified') COLLATE NOCASE,
+                    COALESCE(NULLIF(TRIM(state), ''), 'Not specified') COLLATE NOCASE
+                ORDER BY country COLLATE NOCASE, count DESC, state COLLATE NOCASE
+            `).all<{ country: string; state: string; count: number }>();
 
             const dailyRows = await env.gitanushilanam_db.prepare(`
                 SELECT
