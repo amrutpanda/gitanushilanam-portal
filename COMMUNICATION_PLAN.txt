@@ -1,0 +1,69 @@
+Gitanushilanam communication planning — handoff, 11 October 2026
+
+Current state
+- No implementation is active. All earlier assistant code changes were reverted.
+- Git working tree was clean before this handoff note was added.
+- No deployment, production migration, or participant message was performed.
+- This note is the only change made to save the discussion.
+
+User instruction
+Do not change application code, configuration, or databases until the user
+explicitly asks to implement. Discuss and finalize the plan first.
+
+Preferred approach
+- WhatsApp is the primary place for event announcements and instructions.
+- Avoid WhatsApp API onboarding, provider fees, and integration complexity for now.
+- Use email verification during registration, then send a confirmation email
+  containing the relevant WhatsApp invitation link. Resend is the proposed sender.
+- Show the invitation link on the registration confirmation page too.
+- Check actual WhatsApp membership manually and record it in admin when implemented.
+- Invitation delivery, link clicks, and participant self-confirmation do not prove
+  group membership. Keep them separate from admin-verified membership.
+
+Latest direction: a WhatsApp Community
+- User explored 12 channels, then Communities to identify who actually joined.
+- Suggested structure: one Gitanushilanam Community, common announcements,
+  and 12 competition groups. Final structure and links are not yet confirmed.
+- Community admins can see member phone numbers; competition-group member lists
+  can be matched against registration WhatsApp numbers.
+- Joining the Community does not establish membership in every competition group.
+- Members of ordinary competition groups can see each other's phone numbers.
+- Official documentation checked today says a Community supports up to 2,000
+  members total and up to 100 groups; individual groups support up to 1,024 members.
+- Official documentation currently says Communities cannot be created in the
+  WhatsApp Business app. The user has a Business app number; determine whether
+  an organizer's regular WhatsApp account will create the Community.
+- No official confirmation was found that one Business app number can create
+  12 channels. Do not present that as established.
+
+Next discussion / work
+1. Confirm expected participant count and final Community/group structure.
+2. Confirm the organizer account and obtain competition invitation links.
+3. Set up Resend and verify the sending domain.
+4. Finalize email verification and manual membership tracking behavior.
+5. Implement only after explicit user authorization.
+
+If WhatsApp API is reconsidered
+- User wants to keep the existing Business app number and currently has no API.
+- Coexistence onboarding and actual provider choice must precede integration.
+- Provider credentials, approved template, and channel/group link are distinct
+  prerequisites. A link alone does not provide API access.
+- Recheck prices and eligibility; earlier estimates are not fixed quotes.
+
+Documentation consulted (recheck current limits before implementation)
+https://faq.whatsapp.com/438859978317289/?cms_platform=web
+https://faq.whatsapp.com/3242937609289432/?cms_platform=web
+https://faq.whatsapp.com/236979282604093
+https://faq.whatsapp.com/7179561392143247/?cms_platform=web
+https://faq.whatsapp.com/495856382464992
+https://resend.com/docs/send-with-cloudflare-workers
+https://resend.com/docs/dashboard/domains/introduction
+
+Repository observations for future implementation
+- Backend: src/index.ts, Cloudflare Workers with D1; existing admin authentication.
+- Registration files: website/registration.html and website/js/registration.js.
+- Admin frontend source was not found in the inspected website directory.
+- Existing test/index.spec.ts appeared out of date: five tests failed when run
+  during the reverted implementation (registration requirements/CORS expectations).
+  Do not claim a clean baseline test run; inspect again when implementation begins.
+- Read AGENTS.md and retrieve current Cloudflare documentation for Workers/D1 work.

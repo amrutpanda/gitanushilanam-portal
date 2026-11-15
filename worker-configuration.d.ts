@@ -3,7 +3,7 @@
 // Runtime types generated with workerd@1.20260911.1 2026-09-11 
 interface __BaseEnv_Env {
 	gitanushilanam_db: D1Database;
-	REGISTRATION_DEADLINE: "2026-11-15T23:59:59+05:30";
+	REGISTRATION_DEADLINE: "2026-11-30T23:59:59+05:30";
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
