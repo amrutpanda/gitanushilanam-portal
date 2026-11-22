@@ -7,6 +7,9 @@ import adminAuth from "../migrations/0006_admin_auth.sql?raw";
 import participantGroup from "../migrations/0007_add_participant_group.sql?raw";
 import auditLog from "../migrations/0008_super_admin_audit.sql?raw";
 
+import uniqueContacts from "../migrations/0004_make_email_phone_unique.sql?raw";
+import instituteRegistration from "../migrations/0010_institute_registration.sql?raw";
+
 const db = env.gitanushilanam_db;
 const sessionToken = "s".repeat(43);
 const participantId = 77;
@@ -15,7 +18,8 @@ const participantEmail = "participant@example.com";
 async function applyMigration(sql: string) {
     const executableSql = sql.replace(/--.*$/gmu, "");
 
-    for (const statement of executableSql.split(";")) {
+    // Keep the SELECT CASE ... END; inside each trigger together with its END.
+    for (const statement of executableSql.split(/;(?!\s*END\b)/iu)) {
         if (statement.trim()) {
             await db.prepare(statement).run();
         }
@@ -114,7 +118,9 @@ beforeAll(async () => {
         adminAccess,
         adminAuth,
         participantGroup,
-        auditLog
+        auditLog,
+        uniqueContacts,
+        instituteRegistration
     ]) {
         await applyMigration(migration);
     }
@@ -222,5 +228,62 @@ describe("Admin state participant totals", () => {
             headers: { Authorization: `Bearer ${sessionToken}` }
         });
         expect(await empty.json()).toMatchObject({ participants_by_state: [] });
+    });
+});
+
+describe("Super Admin institute editing", () => {
+    async function edit(changes: Record<string, unknown> = {}) {
+        return SELF.fetch(`https://example.com/admin/api/registrations/${participantId}`, {
+            method: "PATCH", headers: { Authorization: `Bearer ${sessionToken}`, Origin: "https://gitanushilanam.net", "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "Updated Student", email: participantEmail, phone: "+919876543210", whatsapp: "+919876543210", age: 18,
+                gender: "other", institution_organization: "Test Institution", participant_group: "senior", country: "India", state: "Odisha", city: "Puri",
+                heard_from: "School", competitions: ["bhagavad_gita_quiz"], ...changes })
+        });
+    }
+    async function second(type: string, school = "Test Institution") {
+        await db.prepare(`INSERT INTO registrations (name, email, phone, whatsapp, age, country, state, city, registration_type, institution_organization, institute_school_key)
+            VALUES ('Other', ?, '+919876543211', '+919876543211', 15, 'India', 'Odisha', 'Puri', ?, ?, ?)`)
+            .bind("shared@example.com", type, school, type === "institute" ? school.toLowerCase() : null).run();
+    }
+    it("allows shared institute emails while preserving phone uniqueness and Quiz-only participation", async () => {
+        await seed("super_admin");
+        await db.prepare("UPDATE registrations SET registration_type = 'institute', institute_school_key = 'test institution', shloka_recitation = 0").run();
+        await second("institute");
+        expect((await edit({ email: "shared@example.com" })).status).toBe(200);
+        expect((await edit({ phone: "+919876543211" })).status).toBe(409);
+        expect((await edit({ competitions: ["treasure_hunt"] })).status).toBe(400);
+        expect((await edit({ institution_organization: "" })).status).toBe(400);
+        expect(await db.prepare("SELECT registration_type, email, treasure_hunt FROM registrations WHERE id = ?").bind(participantId).first())
+            .toMatchObject({ registration_type: "institute", email: "shared@example.com", treasure_hunt: 0 });
+    });
+    it("still rejects duplicate individual emails and prevents clients changing registration type", async () => {
+        await seed("super_admin"); await second("individual");
+        expect((await edit({ email: "shared@example.com", registration_type: "institute" })).status).toBe(409);
+        expect(await db.prepare("SELECT registration_type FROM registrations WHERE id = ?").bind(participantId).first("registration_type")).toBe("individual");
+    });
+    it.each(["individual", "other school"])("rejects moving an institute record to an email owned by %s", async owner => {
+        await seed("super_admin");
+        await db.prepare("UPDATE registrations SET registration_type = 'institute', institute_school_key = 'test institution', shloka_recitation = 0").run();
+        await second(owner === "individual" ? "individual" : "institute", "Other School");
+        expect((await edit({ email: "shared@example.com" })).status).toBe(409);
+        expect(await db.prepare("SELECT email FROM registrations WHERE id = ?").bind(participantId).first("email")).toBe(participantEmail);
+        expect(await db.prepare("SELECT COUNT(*) FROM admin_audit_log").first("COUNT(*)")).toBe(0);
+    });
+    it("rejects moving an individual record to a school email", async () => {
+        await seed("super_admin"); await second("institute");
+        expect((await edit({ email: "SHARED@example.com" })).status).toBe(409);
+    });
+    it("allows normalized school spelling but rejects renaming one student to a different school under a shared email", async () => {
+        await seed("super_admin");
+        await db.prepare("UPDATE registrations SET registration_type = 'institute', institute_school_key = 'test institution', shloka_recitation = 0").run();
+        await second("institute");
+        expect((await edit({ email: "shared@example.com", institution_organization: " TEST   Institution " })).status).toBe(200);
+        expect((await edit({ email: "shared@example.com", institution_organization: "Different School" })).status).toBe(409);
+        await expect(db.prepare("UPDATE registrations SET institute_school_key = 'different school' WHERE id = ?").bind(participantId).run())
+            .rejects.toThrow("registration_email_conflict");
+        expect(await db.prepare("SELECT institute_school_key FROM registrations WHERE id = ?").bind(participantId).first("institute_school_key")).toBe("test institution");
+    });
+    it("keeps ordinary admins read-only", async () => {
+        await seed("admin"); expect((await edit()).status).toBe(403);
     });
 });

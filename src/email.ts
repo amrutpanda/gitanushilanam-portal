@@ -263,6 +263,36 @@ export function buildResendBatchEmail(
     };
 }
 
+export function buildInstituteConfirmationEmail(participant: AdminEmailParticipant): ResendBatchEmail {
+    const email = buildResendBatchEmail(
+        participant,
+        "Quiz registration confirmed — {{name}}",
+        `Hare Krishna {{name}},
+
+Your institute registration for Bhagavad Gita Quiz in Gitanushilanam 2026 is confirmed.
+
+School / Institute: {{institution}}
+Participant group: {{participant_group}}
+Registered email: {{email}}
+Registered phone: {{phone}}
+
+Please remember this registered email and phone number, including the country code, for logging in to appear for the examination. Exam access details will be shared separately.
+
+Join your Quiz WhatsApp group for updates:
+{{whatsapp_links}}
+
+With regards,
+Gitanushilanam Team`
+    );
+    return {
+        ...email,
+        tags: [
+            { name: "source", value: "institute_registration" },
+            { name: "registration_id", value: String(participant.id) }
+        ]
+    };
+}
+
 export function buildRegistrationConfirmationEmail(
     participant: AdminEmailParticipant
 ): ResendBatchEmail {
