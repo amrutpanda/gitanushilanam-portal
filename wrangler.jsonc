@@ -11,6 +11,12 @@
 		"enabled": true
 	},
 	"upload_source_maps": true,
+	"r2_buckets": [
+		{
+			"binding": "SCHOOL_QUIZ_UPLOADS",
+			"bucket_name": "gitanushilanam-school-quiz-uploads"
+		}
+	],
 	"d1_databases": [
 		{
 			"binding": "gitanushilanam_db",

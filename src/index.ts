@@ -5,6 +5,7 @@ import {
     getCorsHeaders, jsonResponse, isAllowedOrigin, verifyTurnstile
 } from "./registration-support";
 import { handleInstituteRegistration, validateInstituteEdit } from "./institute-registration";
+import { handleSchoolQuizUploads } from "./school-quiz-uploads";
 import {
     ADMIN_EMAIL_MAX_RECIPIENTS,
     type AdminEmailParticipant,
@@ -466,6 +467,10 @@ export default {
 
         if (url.pathname === "/api/institute/register" && request.method === "POST") {
             return handleInstituteRegistration(request, env);
+        }
+
+        if (url.pathname === "/api/school-quiz/uploads" || url.pathname.startsWith("/api/school-quiz/uploads/")) {
+            return handleSchoolQuizUploads(request, env, requireSuperAdminSession);
         }
 
         /* TEST ENDPOINT */

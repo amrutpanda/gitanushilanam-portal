@@ -13,6 +13,7 @@ import instituteRegistration from "../migrations/0010_institute_registration.sql
 const db = env.gitanushilanam_db;
 const testEnv = {
     gitanushilanam_db: db,
+    SCHOOL_QUIZ_UPLOADS: env.SCHOOL_QUIZ_UPLOADS,
     TURNSTILE_SECRET_KEY: "turnstile-secret",
     RESEND_API_KEY: "resend-secret",
     REGISTRATION_DEADLINE: "2099-11-01T23:59:59+05:30"

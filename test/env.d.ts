@@ -1,6 +1,7 @@
 declare namespace Cloudflare {
     interface Env {
         gitanushilanam_db: D1Database;
+        SCHOOL_QUIZ_UPLOADS: R2Bucket;
     }
 }
 
