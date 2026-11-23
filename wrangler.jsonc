@@ -11,17 +11,17 @@
 		"enabled": true
 	},
 	"upload_source_maps": true,
-	"r2_buckets": [
-		{
-			"binding": "SCHOOL_QUIZ_UPLOADS",
-			"bucket_name": "gitanushilanam-school-quiz-uploads"
-		}
-	],
 	"d1_databases": [
 		{
 			"binding": "gitanushilanam_db",
 			"database_name": "gitanushilanam-db",
 			"database_id": "0fa84bc8-bca5-4a7b-b901-46393cf641c3"
+		},
+		{
+			"binding": "SCHOOL_QUIZ_UPLOADS",
+			"database_name": "gitanushilanam-school-uploads",
+			"database_id": "3a9920a5-1171-40d8-b5ad-c290191825db",
+			"migrations_dir": "migrations-school-uploads"
 		}
 	],
 	"vars": {

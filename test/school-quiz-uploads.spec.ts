@@ -4,10 +4,10 @@ import worker from "../src/index";
 import initialSchema from "../migrations/0001_create_registrations_table.sql?raw";
 import adminAccess from "../migrations/0005_create_admin_accesslist.sql?raw";
 import adminAuth from "../migrations/0006_admin_auth.sql?raw";
-import uploadsSchema from "../migrations/0011_school_quiz_uploads.sql?raw";
+import uploadsSchema from "../migrations-school-uploads/0001_school_quiz_uploads.sql?raw";
 
 const db = env.gitanushilanam_db;
-const bucket = env.SCHOOL_QUIZ_UPLOADS;
+const uploadsDb = env.SCHOOL_QUIZ_UPLOADS;
 const testEnv = { ...env, TURNSTILE_SECRET_KEY: "test-secret", RESEND_API_KEY: "test-secret" };
 const path = "https://example.com/api/school-quiz/uploads";
 const origin = "https://gitanushilanam.net";
@@ -42,21 +42,25 @@ function review(suffix = "", authenticated = true) {
 }
 
 beforeAll(async () => {
-    for (const migration of [initialSchema, adminAccess, adminAuth, uploadsSchema]) {
+    for (const migration of [initialSchema, adminAccess, adminAuth]) {
         for (const statement of migration.replace(/--.*$/gmu, "").split(";")) {
             if (statement.trim()) await db.prepare(statement).run();
         }
     }
 });
 
+beforeAll(async () => {
+    for (const statement of uploadsSchema.replace(/--.*$/gmu, "").split(";")) {
+        if (statement.trim()) await uploadsDb.prepare(statement).run();
+    }
+});
+
 beforeEach(async () => {
     vi.restoreAllMocks();
-    await db.prepare("DELETE FROM school_quiz_uploads").run();
+    await uploadsDb.prepare("DELETE FROM school_quiz_uploads").run();
     await db.prepare("DELETE FROM admin_sessions").run();
     await db.prepare("DELETE FROM admin_login_history").run();
     await db.prepare("DELETE FROM admin_accesslist").run();
-    const objects = await bucket.list();
-    if (objects.objects.length) await bucket.delete(objects.objects.map(object => object.key));
     vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
         expect(String(input)).toBe("https://challenges.cloudflare.com/turnstile/v0/siteverify");
         return Response.json({ success: true, action: "school_quiz_upload", hostname: "gitanushilanam.net" });
@@ -70,12 +74,12 @@ describe("School quiz file collection", () => {
         const receipt = await response.json<Record<string, unknown>>();
         expect(receipt).toMatchObject({ success: true, school_name: "Example School", original_filename: "students.xlsx" });
         expect(receipt).not.toHaveProperty("file_key");
-        const row = await db.prepare("SELECT * FROM school_quiz_uploads").first<Record<string, unknown>>();
+        const row = await uploadsDb.prepare("SELECT * FROM school_quiz_uploads").first<Record<string, unknown>>();
         expect(Object.keys(row!)).toHaveLength(7);
         expect(row).toMatchObject({ school_name: "Example School", state: null, city: null, file_size: bytes.length });
         expect(row?.uploaded_at).toBe(receipt.uploaded_at);
-        const object = await bucket.get(String(row?.file_key));
-        expect(new Uint8Array(await object!.arrayBuffer())).toEqual(bytes);
+        const content = await uploadsDb.prepare("SELECT content FROM school_quiz_upload_chunks WHERE file_key = ?").bind(row?.file_key).first<string>("content");
+        expect(Uint8Array.from(atob(content!), ch => ch.charCodeAt(0))).toEqual(bytes);
         expect(await db.prepare("SELECT COUNT(*) AS count FROM registrations").first<number>("count")).toBe(0);
         expect(fetch).toHaveBeenCalledTimes(1);
     });
@@ -83,8 +87,8 @@ describe("School quiz file collection", () => {
     it("retains multiple uploads with the same school and filename", async () => {
         expect((await upload()).status).toBe(200);
         expect((await upload()).status).toBe(200);
-        expect(await db.prepare("SELECT COUNT(*) AS count FROM school_quiz_uploads").first<number>("count")).toBe(2);
-        expect((await bucket.list()).objects).toHaveLength(2);
+        expect(await uploadsDb.prepare("SELECT COUNT(*) AS count FROM school_quiz_uploads").first<number>("count")).toBe(2);
+        expect(await uploadsDb.prepare("SELECT COUNT(DISTINCT file_key) AS count FROM school_quiz_upload_chunks").first<number>("count")).toBe(2);
     });
 
     it("recovers an identical retry with the original timestamp and only one file", async () => {
@@ -92,16 +96,16 @@ describe("School quiz file collection", () => {
         const first = await (await upload({ key })).json();
         const second = await (await upload({ key })).json();
         expect(second).toEqual(first);
-        expect(await db.prepare("SELECT COUNT(*) AS count FROM school_quiz_uploads").first<number>("count")).toBe(1);
-        expect((await bucket.list()).objects).toHaveLength(1);
+        expect(await uploadsDb.prepare("SELECT COUNT(*) AS count FROM school_quiz_uploads").first<number>("count")).toBe(1);
+        expect(await uploadsDb.prepare("SELECT COUNT(DISTINCT file_key) AS count FROM school_quiz_upload_chunks").first<number>("count")).toBe(1);
     });
 
     it("handles concurrent retries without overwriting or duplicating the workbook", async () => {
         const key = crypto.randomUUID();
         const responses = await Promise.all([upload({ key }), upload({ key })]);
         expect(responses.map(response => response.status)).toEqual([200, 200]);
-        expect(await db.prepare("SELECT COUNT(*) AS count FROM school_quiz_uploads").first<number>("count")).toBe(1);
-        expect((await bucket.list()).objects).toHaveLength(1);
+        expect(await uploadsDb.prepare("SELECT COUNT(*) AS count FROM school_quiz_uploads").first<number>("count")).toBe(1);
+        expect(await uploadsDb.prepare("SELECT COUNT(DISTINCT file_key) AS count FROM school_quiz_upload_chunks").first<number>("count")).toBe(1);
     });
 
     it("does not overwrite different content even if an attempt key is reused", async () => {
@@ -109,20 +113,46 @@ describe("School quiz file collection", () => {
         await upload({ key });
         await upload({ key, bytes: new Uint8Array([...bytes, 9]) });
         await upload({ key, school: "Another School" });
-        expect((await bucket.list()).objects).toHaveLength(3);
+        expect(await uploadsDb.prepare("SELECT COUNT(DISTINCT file_key) AS count FROM school_quiz_upload_chunks").first<number>("count")).toBe(3);
     });
 
-    it("recovers when the file is saved but the metadata write fails", async () => {
+    it("rolls back metadata and chunks on a failed write, then permits retry", async () => {
         const key = crypto.randomUUID();
-        const failure = vi.spyOn(db, "prepare").mockImplementationOnce(() => { throw new Error("Temporary D1 failure"); });
-        expect((await upload({ key })).status).toBe(503);
-        failure.mockRestore();
-        expect((await bucket.list()).objects).toHaveLength(1);
-        const storedTime = (await bucket.head((await bucket.list()).objects[0].key))!.customMetadata!.uploaded_at;
-        const result = await (await upload({ key })).json<{ uploaded_at: string }>();
-        expect(result.uploaded_at).toBe(storedTime);
-        expect((await bucket.list()).objects).toHaveLength(1);
-        expect(await db.prepare("SELECT COUNT(*) AS count FROM school_quiz_uploads").first<number>("count")).toBe(1);
+        await uploadsDb.prepare("CREATE TRIGGER fail_chunk BEFORE INSERT ON school_quiz_upload_chunks BEGIN SELECT RAISE(ABORT, 'simulated failure'); END").run();
+        try { expect((await upload({ key })).status).toBe(503); }
+        finally { await uploadsDb.prepare("DROP TRIGGER fail_chunk").run(); }
+        expect(await uploadsDb.prepare("SELECT COUNT(*) AS count FROM school_quiz_uploads").first<number>("count")).toBe(0);
+        expect(await uploadsDb.prepare("SELECT COUNT(*) AS count FROM school_quiz_upload_chunks").first<number>("count")).toBe(0);
+        expect((await upload({ key })).status).toBe(200);
+    });
+
+    it("accepts exactly 2 MB and downloads identical bytes across all storage chunks", async () => {
+        await authorize();
+        const large = new Uint8Array(2_000_000);
+        for (let offset = 0; offset < large.length; offset++) large[offset] = offset % 256;
+        large.set(bytes);
+        expect((await upload({ bytes: large })).status).toBe(200);
+        const key = await uploadsDb.prepare("SELECT file_key FROM school_quiz_uploads").first<string>("file_key");
+        expect(await uploadsDb.prepare("SELECT COUNT(*) AS count FROM school_quiz_upload_chunks").first<number>("count")).toBe(4);
+        const response = await review(`/download?key=${encodeURIComponent(key!)}`);
+        expect(response.status).toBe(200);
+        expect(new Uint8Array(await response.arrayBuffer())).toEqual(large);
+        expect(await (await review()).json()).toMatchObject({ storage_used_bytes: 2_000_000, storage_limit_bytes: 100_000_000 });
+    });
+
+    it("caps concurrent uploads at 100 MB, accepts exact capacity, and allows saved retries when full", async () => {
+        await uploadsDb.batch(Array.from({ length: 50 }, (_, index) => uploadsDb.prepare(
+            "INSERT INTO school_quiz_uploads (school_name, original_filename, file_key, file_size) VALUES ('Seed', 'seed.xlsx', ?, ?)"
+        ).bind(`seed-${index}`, index === 49 ? 2_000_000 - bytes.length : 2_000_000)));
+        const keys = [crypto.randomUUID(), crypto.randomUUID()];
+        const responses = await Promise.all(keys.map(key => upload({ key })));
+        expect(responses.map(r => r.status).sort()).toEqual([200, 507]);
+        expect(await uploadsDb.prepare("SELECT SUM(file_size) AS size FROM school_quiz_uploads").first<number>("size")).toBe(100_000_000);
+        expect(await uploadsDb.prepare("SELECT COUNT(*) AS count FROM school_quiz_upload_chunks").first<number>("count")).toBe(1);
+        const successfulKey = keys[responses.findIndex(response => response.status === 200)];
+        expect((await upload({ key: successfulKey })).status).toBe(200);
+        expect((await upload()).status).toBe(507);
+        expect(await uploadsDb.prepare("SELECT SUM(file_size) AS size FROM school_quiz_uploads").first<number>("size")).toBe(100_000_000);
     });
 
     it.each([
@@ -133,12 +163,12 @@ describe("School quiz file collection", () => {
         ["wrong extension", { filename: "students.xlsm" }, 400],
         ["non-container", { bytes: new Uint8Array([1, 2, 3, 4]) }, 400],
         ["empty file", { bytes: new Uint8Array() }, 400],
-        ["oversized file", { bytes: new Uint8Array(5 * 1024 * 1024 + 1) }, 413],
+        ["oversized file", { bytes: new Uint8Array(2_000_001) }, 413],
         ["wrong origin", { origin: "https://example.org" }, 403]
     ] as const)("rejects %s without saving anything", async (_label, options, status) => {
         expect((await upload(options)).status).toBe(status);
-        expect((await bucket.list()).objects).toHaveLength(0);
-        expect(await db.prepare("SELECT COUNT(*) AS count FROM school_quiz_uploads").first<number>("count")).toBe(0);
+        expect(await uploadsDb.prepare("SELECT COUNT(DISTINCT file_key) AS count FROM school_quiz_upload_chunks").first<number>("count")).toBe(0);
+        expect(await uploadsDb.prepare("SELECT COUNT(*) AS count FROM school_quiz_uploads").first<number>("count")).toBe(0);
     });
 
     it.each([
@@ -148,13 +178,13 @@ describe("School quiz file collection", () => {
     ])("rejects unsuccessful or mismatched security verification", async result => {
         vi.mocked(fetch).mockResolvedValueOnce(Response.json(result));
         expect((await upload()).status).toBe(403);
-        expect((await bucket.list()).objects).toHaveLength(0);
+        expect(await uploadsDb.prepare("SELECT COUNT(DISTINCT file_key) AS count FROM school_quiz_upload_chunks").first<number>("count")).toBe(0);
     });
 
     it("bounds an oversized request body even without Content-Length", async () => {
         const response = await worker.fetch(new Request(path, {
             method: "POST", headers: { Origin: origin, "Content-Type": "multipart/form-data; boundary=test" },
-            body: new Uint8Array(5 * 1024 * 1024 + 65537)
+            body: new Uint8Array(2_000_000 + 65537)
         }), testEnv);
         expect(response.status).toBe(413);
     });
@@ -191,7 +221,7 @@ describe("Standalone upload review authorization", () => {
 
     it("paginates results with deterministic ordering", async () => {
         await authorize();
-        await db.batch(Array.from({ length: 28 }, (_, index) => db.prepare(
+        await uploadsDb.batch(Array.from({ length: 28 }, (_, index) => uploadsDb.prepare(
             "INSERT INTO school_quiz_uploads (school_name, original_filename, file_key, file_size) VALUES ('Example School', 'students.xlsx', ?, 8)"
         ).bind(`page-test-${String(index).padStart(2, "0")}`)));
         const first = await (await review()).json<{ uploads: { file_key: string }[] }>();
@@ -204,7 +234,7 @@ describe("Standalone upload review authorization", () => {
 
     it("downloads exact bytes with a safe attachment filename and no caching", async () => {
         await authorize(); await upload({ filename: "छात्र सूची.xlsx" });
-        const key = await db.prepare("SELECT file_key FROM school_quiz_uploads").first<string>("file_key");
+        const key = await uploadsDb.prepare("SELECT file_key FROM school_quiz_uploads").first<string>("file_key");
         const response = await review(`/download?key=${encodeURIComponent(key!)}`);
         expect(response.status).toBe(200);
         expect(response.headers.get("Content-Disposition")).toContain("filename*=UTF-8''");
