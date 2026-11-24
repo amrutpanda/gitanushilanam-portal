@@ -5,6 +5,8 @@ export class ValidationError extends Error {}
 export interface Env {
     gitanushilanam_db: D1Database;
     SCHOOL_QUIZ_UPLOADS: D1Database;
+    MENTORS_DB: D1Database;
+    MENTOR_WHATSAPP_GROUP: string;
     TURNSTILE_SECRET_KEY: string;
     RESEND_API_KEY: string;
     REGISTRATION_DEADLINE: string;

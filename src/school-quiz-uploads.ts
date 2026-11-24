@@ -1,6 +1,6 @@
 import {
     type Env, ValidationError, getCorsHeaders, isAllowedOrigin,
-    jsonResponse, readRequiredText, verifyTurnstile
+    jsonResponse, readRequiredText
 } from "./registration-support";
 
 const UPLOAD_PATH = "/api/school-quiz/uploads";
@@ -15,6 +15,11 @@ const KEY_PATTERN = /^school-quiz\/[0-9a-f-]{36}\/[0-9a-f]{64}\.xlsx$/u;
 
 type AuthorizeReview = (request: Request, env: Env) => Promise<unknown | Response>;
 
+export interface UploadOwner {
+    id: string; name: string; school_id: number; school_name: string; state: string; district: string; place: string;
+}
+export interface UploadActor { role: "mentor" | "super_admin"; id: string }
+
 interface UploadRecord {
     school_name: string;
     state: string | null;
@@ -25,7 +30,7 @@ interface UploadRecord {
     uploaded_at: string;
 }
 
-class UploadTooLarge extends Error {}
+export class UploadTooLarge extends Error {}
 
 // Native base64 conversion avoids D1's large byte-array JSON serialization.
 // Base64 is only a lossless storage encoding; no Excel content is parsed.
@@ -75,15 +80,14 @@ async function readUploadForm(request: Request): Promise<FormData> {
     }
 }
 
-async function saveUpload(request: Request, env: Env): Promise<Response> {
+export async function saveUpload(request: Request, env: Env, owner: UploadOwner, actor: UploadActor): Promise<Response> {
     if (!isAllowedOrigin(request)) {
         return jsonResponse(request, { success: false, message: "Request origin is not allowed." }, 403);
     }
     const form = await readUploadForm(request);
-    const school = readRequiredText(form.get("school_name"), "School name", 200);
+    const school = owner.school_name;
     const requestKey = readRequiredText(form.get("request_id"), "Upload retry key", 36).toLowerCase();
     if (!UUID_PATTERN.test(requestKey)) throw new ValidationError("Please refresh the upload page and try again.");
-    const token = readRequiredText(form.get("turnstile_token"), "Security verification", 2048);
     const file = form.get("file");
     if (!(file instanceof File) || file.size === 0) throw new ValidationError("Please choose a non-empty Excel (.xlsx) file.");
     if (file.size > MAX_FILE_BYTES) throw new UploadTooLarge();
@@ -96,13 +100,11 @@ async function saveUpload(request: Request, env: Env): Promise<Response> {
     if (bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 0x03 || bytes[3] !== 0x04) {
         throw new ValidationError("This file is not an Excel .xlsx container. Please use the downloaded template.");
     }
-    if (!await verifyTurnstile(token, request, env.TURNSTILE_SECRET_KEY, "school_quiz_upload")) {
-        return jsonResponse(request, { success: false, message: "Security verification failed. Please complete it again and retry." }, 403);
-    }
+
 
     // The browser retains an opaque attempt key. Include the bytes and metadata in
     // the file key so neither a key collision nor a changed file can overwrite data.
-    const metadata = new TextEncoder().encode(JSON.stringify([school, filename]) + "\n");
+    const metadata = new TextEncoder().encode(JSON.stringify([owner.id, owner.school_id, actor.role, actor.id, school, filename]) + "\n");
     const fingerprintInput = new Uint8Array(metadata.length + bytes.length);
     fingerprintInput.set(metadata);
     fingerprintInput.set(bytes, metadata.length);
@@ -114,12 +116,14 @@ async function saveUpload(request: Request, env: Env): Promise<Response> {
     // Capacity enforcement runs inside this INSERT transaction. Concurrent uploads
     // cannot both claim the same remaining space; existing retries cost no space.
     const statements = [db.prepare(`
-        INSERT INTO school_quiz_uploads (school_name, original_filename, file_key, file_size, uploaded_at)
-        SELECT ?, ?, ?, ?, ? WHERE
+        INSERT INTO school_quiz_uploads (school_name, original_filename, file_key, file_size, uploaded_at,
+            state, city, district, school_registration_id, mentor_id, mentor_name, uploaded_by_role, uploaded_by_id)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE
             EXISTS (SELECT 1 FROM school_quiz_uploads WHERE file_key = ?)
             OR (SELECT COALESCE(SUM(file_size), 0) FROM school_quiz_uploads) + ? <= ?
         ON CONFLICT(file_key) DO NOTHING
-    `).bind(school, filename, key, file.size, new Date().toISOString(), key, file.size, MAX_TOTAL_BYTES)];
+    `).bind(school, filename, key, file.size, new Date().toISOString(), owner.state, owner.place, owner.district,
+        owner.school_id, owner.id, owner.name, actor.role, actor.id, key, file.size, MAX_TOTAL_BYTES)];
     for (let start = 0, part = 0; start < bytes.length; start += CHUNK_BYTES, part++) {
         statements.push(db.prepare(`
             INSERT INTO school_quiz_upload_chunks (file_key, part, content)
@@ -139,29 +143,32 @@ async function saveUpload(request: Request, env: Env): Promise<Response> {
         success: true,
         message: "File received. Student registrations will be processed later.",
         school_name: school,
+        school_registration_id: owner.school_id,
         original_filename: filename,
         uploaded_at: timestamp
     });
 }
 
-async function listUploads(request: Request, env: Env, url: URL): Promise<Response> {
+export async function listUploads(request: Request, env: Env, url: URL, mentorId: string | null = null): Promise<Response> {
     const search = (url.searchParams.get("school") || "").trim();
     if (Array.from(search).length > 200) throw new ValidationError("School search must not exceed 200 characters.");
     const pageValue = url.searchParams.get("page") || "1";
     if (!/^[1-9]\d{0,6}$/u.test(pageValue)) throw new ValidationError("Invalid page number.");
     const page = Number(pageValue);
     // instr treats wildcard characters literally, unlike a user-provided LIKE pattern.
-    const filter = "(? = '' OR instr(lower(school_name), lower(?)) > 0)";
+    const filter = "(? = '' OR instr(lower(school_name || ' ' || COALESCE(CAST(school_registration_id AS TEXT), '')), lower(?)) > 0)";
+    const scope = "(? IS NULL OR mentor_id = ?)";
     const counts = await env.SCHOOL_QUIZ_UPLOADS.prepare(`
         SELECT COUNT(*) AS total_uploads, COALESCE(SUM(file_size), 0) AS storage_used_bytes,
             COALESCE(SUM(CASE WHEN ${filter} THEN 1 ELSE 0 END), 0) AS matching_uploads
-        FROM school_quiz_uploads
-    `).bind(search, search).first<{ total_uploads: number; matching_uploads: number; storage_used_bytes: number }>();
+        FROM school_quiz_uploads WHERE ${scope}
+    `).bind(search, search, mentorId, mentorId).first<{ total_uploads: number; matching_uploads: number; storage_used_bytes: number }>();
     const result = await env.SCHOOL_QUIZ_UPLOADS.prepare(`
-        SELECT school_name, state, city, original_filename, file_key, file_size, uploaded_at
-        FROM school_quiz_uploads WHERE ${filter}
+        SELECT school_name, state, city, district, school_registration_id, mentor_id, mentor_name,
+            uploaded_by_role, uploaded_by_id, original_filename, file_key, file_size, uploaded_at
+        FROM school_quiz_uploads WHERE ${filter} AND ${scope}
         ORDER BY uploaded_at DESC, file_key DESC LIMIT ? OFFSET ?
-    `).bind(search, search, PAGE_SIZE, (page - 1) * PAGE_SIZE).all<UploadRecord>();
+    `).bind(search, search, mentorId, mentorId, PAGE_SIZE, (page - 1) * PAGE_SIZE).all<UploadRecord>();
     return jsonResponse(request, {
         success: true, uploads: result.results,
         total_uploads: counts?.total_uploads ?? 0,
@@ -172,12 +179,12 @@ async function listUploads(request: Request, env: Env, url: URL): Promise<Respon
     });
 }
 
-async function downloadUpload(request: Request, env: Env, url: URL): Promise<Response> {
+export async function downloadUpload(request: Request, env: Env, url: URL, mentorId: string | null = null): Promise<Response> {
     const key = url.searchParams.get("key") || "";
     if (!KEY_PATTERN.test(key)) throw new ValidationError("Invalid file selection.");
     const row = await env.SCHOOL_QUIZ_UPLOADS.prepare(
-        "SELECT original_filename, file_size FROM school_quiz_uploads WHERE file_key = ?"
-    ).bind(key).first<{ original_filename: string; file_size: number }>();
+        "SELECT original_filename, file_size FROM school_quiz_uploads WHERE file_key = ? AND (? IS NULL OR mentor_id = ?)"
+    ).bind(key, mentorId, mentorId).first<{ original_filename: string; file_size: number }>();
     if (!row) return jsonResponse(request, { success: false, message: "Upload not found." }, 404);
     const chunks = await env.SCHOOL_QUIZ_UPLOADS.prepare(
         "SELECT part, content FROM school_quiz_upload_chunks WHERE file_key = ? ORDER BY part"
@@ -212,7 +219,10 @@ export async function handleSchoolQuizUploads(
 ): Promise<Response> {
     const url = new URL(request.url);
     try {
-        if (url.pathname === UPLOAD_PATH && request.method === "POST") return await saveUpload(request, env);
+        if (url.pathname === UPLOAD_PATH && request.method === "POST") return jsonResponse(request, {
+            success: false, message: "Please register or use Mentor Login to upload your workbook.",
+            registration_url: "https://gitanushilanam.net/mentor-registration.html"
+        }, 401);
         if ((url.pathname === UPLOAD_PATH || url.pathname === `${UPLOAD_PATH}/download`) && request.method === "GET") {
             const session = await authorizeReview(request, env);
             if (session instanceof Response) return session;

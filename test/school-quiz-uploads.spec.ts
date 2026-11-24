@@ -1,6 +1,9 @@
 import { env } from "cloudflare:test";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
+import { handleMentorRoutes } from "../src/mentor-routes";
+import ownership from "../migrations-school-uploads/0002_mentor_ownership.sql?raw";
+import mentorsSchema from "../migrations-mentors/0001_mentors.sql?raw";
 import initialSchema from "../migrations/0001_create_registrations_table.sql?raw";
 import adminAccess from "../migrations/0005_create_admin_accesslist.sql?raw";
 import adminAuth from "../migrations/0006_admin_auth.sql?raw";
@@ -15,7 +18,9 @@ const sessionToken = "u".repeat(43);
 // Intentionally not a parsed workbook: uploads only check the container signature.
 const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3, 4]);
 
-function upload(options: { school?: string; key?: string; filename?: string; bytes?: Uint8Array; origin?: string; file?: boolean } = {}) {
+const ownerId = "12345678-1234-4234-8234-123456789012";
+const authorizedAdmin = async () => ({ admin_id: 42, email: "review@example.com" });
+async function upload(options: { school?: string; key?: string; filename?: string; bytes?: Uint8Array; origin?: string; file?: boolean } = {}) {
     const body = new FormData();
     body.set("school_name", options.school ?? "Example School");
     body.set("request_id", options.key ?? crypto.randomUUID());
@@ -24,7 +29,8 @@ function upload(options: { school?: string; key?: string; filename?: string; byt
     body.set("state", "Maharashtra");
     body.set("city", "Pune");
     if (options.file !== false) body.set("file", new File([options.bytes ?? bytes], options.filename ?? "students.xlsx"));
-    return worker.fetch(new Request(path, { method: "POST", headers: { Origin: options.origin ?? origin }, body }), testEnv);
+    if (options.school) await env.MENTORS_DB.prepare("UPDATE mentor_schools SET name = ? WHERE registration_id = 10000").bind(options.school.trim()).run();
+    return handleMentorRoutes(new Request(`https://example.com/api/mentor-admin/uploads?mentor_id=${ownerId}`, { method: "POST", headers: { Origin: options.origin ?? origin }, body }), testEnv, authorizedAdmin);
 }
 
 async function authorize(role = "super_admin", active = 1, expired = false) {
@@ -50,13 +56,22 @@ beforeAll(async () => {
 });
 
 beforeAll(async () => {
-    for (const statement of uploadsSchema.replace(/--.*$/gmu, "").split(";")) {
+    for (const statement of (uploadsSchema + ownership).replace(/--.*$/gmu, "").split(";")) {
         if (statement.trim()) await uploadsDb.prepare(statement).run();
     }
 });
 
+beforeAll(async () => {
+    for (const statement of mentorsSchema.replace(/--.*$/gmu, "").split(";")) {
+        if (statement.trim()) await env.MENTORS_DB.prepare(statement).run();
+    }
+    await env.MENTORS_DB.prepare("INSERT INTO mentor_schools (registration_id, identity_key, name, state, district, place) VALUES (10000, 'school', 'Example School', 'Odisha', 'Khordha', 'Bhubaneswar')").run();
+    await env.MENTORS_DB.prepare("INSERT INTO mentors (id, school_id, name, email, phone, designation, total_strength, willing_count, request_id, request_hash) VALUES (?, 10000, 'Mentor', 'school@example.com', '+919876543210', 'Teacher', 100, 20, 'request', 'hash')").bind(ownerId).run();
+});
+
 beforeEach(async () => {
     vi.restoreAllMocks();
+    await env.MENTORS_DB.prepare("UPDATE mentor_schools SET name = 'Example School' WHERE registration_id = 10000").run();
     await uploadsDb.prepare("DELETE FROM school_quiz_uploads").run();
     await db.prepare("DELETE FROM admin_sessions").run();
     await db.prepare("DELETE FROM admin_login_history").run();
@@ -68,20 +83,20 @@ beforeEach(async () => {
 });
 
 describe("School quiz file collection", () => {
-    it("stores the original bytes and seven metadata columns without creating registrations or parsing locations", async () => {
+    it("stores original bytes with trusted mentor ownership without creating student registrations", async () => {
         const response = await upload({ school: "  Example School  " });
         expect(response.status).toBe(200);
         const receipt = await response.json<Record<string, unknown>>();
         expect(receipt).toMatchObject({ success: true, school_name: "Example School", original_filename: "students.xlsx" });
         expect(receipt).not.toHaveProperty("file_key");
         const row = await uploadsDb.prepare("SELECT * FROM school_quiz_uploads").first<Record<string, unknown>>();
-        expect(Object.keys(row!)).toHaveLength(7);
-        expect(row).toMatchObject({ school_name: "Example School", state: null, city: null, file_size: bytes.length });
+        expect(Object.keys(row!)).toHaveLength(13);
+        expect(row).toMatchObject({ school_name: "Example School", state: "Odisha", city: "Bhubaneswar", mentor_id: ownerId, uploaded_by_role: "super_admin", uploaded_by_id: "42", file_size: bytes.length });
         expect(row?.uploaded_at).toBe(receipt.uploaded_at);
         const content = await uploadsDb.prepare("SELECT content FROM school_quiz_upload_chunks WHERE file_key = ?").bind(row?.file_key).first<string>("content");
         expect(Uint8Array.from(atob(content!), ch => ch.charCodeAt(0))).toEqual(bytes);
         expect(await db.prepare("SELECT COUNT(*) AS count FROM registrations").first<number>("count")).toBe(0);
-        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(fetch).not.toHaveBeenCalled();
     });
 
     it("retains multiple uploads with the same school and filename", async () => {
@@ -156,8 +171,6 @@ describe("School quiz file collection", () => {
     });
 
     it.each([
-        ["missing school", { school: "  " }, 400],
-        ["long school", { school: "s".repeat(201) }, 400],
         ["invalid retry key", { key: "bad" }, 400],
         ["missing file", { file: false }, 400],
         ["wrong extension", { filename: "students.xlsm" }, 400],
@@ -171,21 +184,16 @@ describe("School quiz file collection", () => {
         expect(await uploadsDb.prepare("SELECT COUNT(*) AS count FROM school_quiz_uploads").first<number>("count")).toBe(0);
     });
 
-    it.each([
-        { success: false },
-        { success: true, hostname: "gitanushilanam.net", action: "registration" },
-        { success: true, hostname: "example.org", action: "school_quiz_upload" }
-    ])("rejects unsuccessful or mismatched security verification", async result => {
-        vi.mocked(fetch).mockResolvedValueOnce(Response.json(result));
-        expect((await upload()).status).toBe(403);
-        expect(await uploadsDb.prepare("SELECT COUNT(DISTINCT file_key) AS count FROM school_quiz_upload_chunks").first<number>("count")).toBe(0);
+    it("retires the anonymous upload endpoint", async () => {
+        expect((await worker.fetch(new Request(path, { method: "POST", headers: { Origin: origin } }), testEnv)).status).toBe(401);
+        expect(await uploadsDb.prepare("SELECT COUNT(*) AS count FROM school_quiz_uploads").first<number>("count")).toBe(0);
     });
 
     it("bounds an oversized request body even without Content-Length", async () => {
-        const response = await worker.fetch(new Request(path, {
+        const response = await handleMentorRoutes(new Request(`https://example.com/api/mentor-admin/uploads?mentor_id=${ownerId}`, {
             method: "POST", headers: { Origin: origin, "Content-Type": "multipart/form-data; boundary=test" },
             body: new Uint8Array(2_000_000 + 65537)
-        }), testEnv);
+        }), testEnv, authorizedAdmin);
         expect(response.status).toBe(413);
     });
 });

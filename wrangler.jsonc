@@ -22,9 +22,16 @@
 			"database_name": "gitanushilanam-school-uploads",
 			"database_id": "3a9920a5-1171-40d8-b5ad-c290191825db",
 			"migrations_dir": "migrations-school-uploads"
+		},
+		{
+			"binding": "MENTORS_DB",
+			"database_name": "gitanushilanam-mentors",
+			"database_id": "d69e1bca-d743-4ba7-9389-0132335db023",
+			"migrations_dir": "migrations-mentors"
 		}
 	],
 	"vars": {
+		"MENTOR_WHATSAPP_GROUP": "https://chat.whatsapp.com/Hwdwzs0kjc9H4YVK83Lfk2",
 		"REGISTRATION_DEADLINE": "2026-11-30T23:59:59+05:30"
 	}
 	/**
@@ -44,7 +51,7 @@
 	 * Note: Use secrets to store sensitive data.
 	 * https://developers.cloudflare.com/workers/configuration/secrets/
 	 */
-	// "vars": {  "MY_VARIABLE": "production_value" }
+	// "vars": { "MY_VARIABLE": "production_value" }
 	/**
 	 * Static Assets
 	 * https://developers.cloudflare.com/workers/static-assets/binding/

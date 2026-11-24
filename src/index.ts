@@ -6,6 +6,7 @@ import {
 } from "./registration-support";
 import { handleInstituteRegistration, validateInstituteEdit } from "./institute-registration";
 import { handleSchoolQuizUploads } from "./school-quiz-uploads";
+import { handleMentorRoutes } from "./mentor-routes";
 import {
     ADMIN_EMAIL_MAX_RECIPIENTS,
     type AdminEmailParticipant,
@@ -467,6 +468,10 @@ export default {
 
         if (url.pathname === "/api/institute/register" && request.method === "POST") {
             return handleInstituteRegistration(request, env);
+        }
+
+        if (url.pathname.startsWith("/api/mentors/") || url.pathname.startsWith("/api/mentor-admin/")) {
+            return handleMentorRoutes(request, env, requireSuperAdminSession);
         }
 
         if (url.pathname === "/api/school-quiz/uploads" || url.pathname.startsWith("/api/school-quiz/uploads/")) {
