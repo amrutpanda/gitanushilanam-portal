@@ -7,6 +7,7 @@ import {
 import { handleInstituteRegistration, validateInstituteEdit } from "./institute-registration";
 import { handleSchoolQuizUploads } from "./school-quiz-uploads";
 import { handleMentorRoutes } from "./mentor-routes";
+import { handleCompetitionSubmissions } from "./competition-submissions";
 import {
     ADMIN_EMAIL_MAX_RECIPIENTS,
     type AdminEmailParticipant,
@@ -468,6 +469,11 @@ export default {
 
         if (url.pathname === "/api/institute/register" && request.method === "POST") {
             return handleInstituteRegistration(request, env);
+        }
+
+        if (url.pathname === "/api/participant-submissions" || url.pathname.startsWith("/api/participant-submissions/") ||
+            url.pathname === "/admin/api/submissions" || url.pathname.startsWith("/admin/api/submissions/")) {
+            return handleCompetitionSubmissions(request, env, requireAdminSession);
         }
 
         if (url.pathname.startsWith("/api/mentors/") || url.pathname.startsWith("/api/mentor-admin/")) {
@@ -1521,6 +1527,7 @@ export default {
                 const deleteStatement = env.gitanushilanam_db.prepare(`
                     DELETE FROM registrations
                     WHERE id = ?
+                    RETURNING id
                 `).bind(registrationId);
 
                 const batchResults = await env.gitanushilanam_db.batch([
@@ -1528,7 +1535,7 @@ export default {
                     deleteStatement
                 ]);
 
-                if (Number(batchResults[1]?.meta?.changes) !== 1) {
+                if (batchResults[1]?.results?.length !== 1) {
                     return jsonResponse(request, {
                         success: false,
                         message: "Registration was already deleted."
